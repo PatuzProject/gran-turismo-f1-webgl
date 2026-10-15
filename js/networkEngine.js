@@ -40,6 +40,14 @@ const NetworkEngine = {
   sendTimer: null,
   pingTimer: null,
 
+  // Sincronizzazione orologio al millisecondo (NTP Clock Sync)
+  clockOffset: null, // Millisecondi di offset tra orologio locale e server
+  bestRtt: null,     // RTT minimo registrato per pesatura campioni NTP
+  getServerTime() {
+    if (this.clockOffset === null) return Date.now();
+    return Date.now() + this.clockOffset;
+  },
+
   // ---------------------------------------------------------------------------
   // 1. CONNESSIONE AL SERVER WEBSOCKET
   // ---------------------------------------------------------------------------
@@ -54,6 +62,8 @@ const NetworkEngine = {
     this.hostId = null;
     this.isHost = false;
     this.lobbyPlayers = {};
+    this.clockOffset = null;
+    this.bestRtt = null;
 
     let wsUrl = (hostUrl || "").trim();
     if (!wsUrl) {
@@ -120,6 +130,8 @@ const NetworkEngine = {
       this.hostId = null;
       this.isHost = false;
       this.lobbyPlayers = {};
+      this.clockOffset = null;
+      this.bestRtt = null;
       this.stopTickLoop();
       this.stopPingLoop();
       this.stopMetricsTimer();
@@ -145,6 +157,8 @@ const NetworkEngine = {
     this.hostId = null;
     this.isHost = false;
     this.lobbyPlayers = {};
+    this.clockOffset = null;
+    this.bestRtt = null;
     this.stopTickLoop();
     this.stopPingLoop();
     this.stopMetricsTimer();
@@ -323,7 +337,7 @@ const NetworkEngine = {
         break;
       }
 
-      // --- EVENTO 5: 'update' (trasformazioni fisiche ricevute in broadcast selettivo) ---
+      // --- EVENTO 5: 'update' (trasformazioni fisiche & telemetria ricevute in broadcast selettivo) ---
       case "update": {
         if (msg.id === this.myPlayerId) return; // ignora noi stessi
 
@@ -335,11 +349,48 @@ const NetworkEngine = {
         }
 
         if (p) {
-          // Aggiorna le coordinate target per l'interpolazione a 60 FPS
+          const nowLocal = performance.now();
+          p.lastPacketLocalTime = nowLocal;
+          p.lastPacketServerTime = typeof msg.t === "number" ? msg.t : this.getServerTime();
+
+          // Coordinate target ricevute
           p.targetPos.set(msg.x, msg.y, msg.z);
           p.targetRotY = msg.rotY;
           p.targetSpeed = msg.speed || 0;
           p.isDrifting = Boolean(msg.isDrifting);
+
+          // Vettori di velocità lineare e angolare per Dead Reckoning
+          if (typeof msg.vx === "number" && typeof msg.vz === "number") {
+            p.velocity.set(msg.vx, msg.vy || 0, msg.vz);
+          } else {
+            const heading = msg.rotY || 0;
+            const spd = msg.speed || 0;
+            p.velocity.set(Math.sin(heading) * spd, 0, Math.cos(heading) * spd);
+          }
+
+          p.yawRate = typeof msg.yawRate === "number" ? msg.yawRate : 0;
+          if (typeof msg.lap === "number") p.lap = msg.lap;
+          if (typeof msg.sampleIndex === "number") p.sampleIndex = msg.sampleIndex;
+          if (typeof msg.totalProgress === "number") p.totalProgress = msg.totalProgress;
+          if (typeof msg.curTime === "number") p.curTime = msg.curTime;
+          if (msg.bestTime) p.bestTime = msg.bestTime;
+          if (typeof msg.finished === "boolean") p.finished = msg.finished;
+          if (typeof msg.finishTime === "number") p.finishTime = msg.finishTime;
+        }
+
+        // Sincronizza lo stato in tempo reale della vettura avversaria in RaceEngine
+        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
+          const racer = RaceEngine.allRacers.find(r => r.id === msg.id);
+          if (racer) {
+            if (typeof msg.totalProgress === "number") racer.totalProgress = msg.totalProgress;
+            if (typeof msg.lap === "number") racer.lap = msg.lap;
+            if (typeof msg.sampleIndex === "number") racer.sampleIndex = msg.sampleIndex;
+            if (typeof msg.curTime === "number") racer.currentLapTime = msg.curTime;
+            if (msg.bestTime) racer.bestLapTime = msg.bestTime;
+            if (msg.finished) racer.finished = true;
+            if (msg.finishTime) racer.finishTime = msg.finishTime;
+            racer.speed = msg.speed || 0;
+          }
         }
         break;
       }
@@ -347,8 +398,19 @@ const NetworkEngine = {
       // --- EVENTO 6: 'playerLeft' (giocatore disconnesso, distruggi mesh) ---
       case "playerLeft": {
         console.log(`[NetEngine] Giocatore uscito: ${msg.id}`);
+        const leftPlayerName = (this.lobbyPlayers[msg.id] && this.lobbyPlayers[msg.id].name) || `Pilota ${msg.id}`;
         delete this.lobbyPlayers[msg.id];
         this.removePlayer(msg.id);
+
+        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
+          RaceEngine.allRacers = RaceEngine.allRacers.filter(r => r.id !== msg.id);
+          const posTotal = document.getElementById("hud-pos-total");
+          if (posTotal) posTotal.textContent = `/ ${RaceEngine.allRacers.length}`;
+          if (typeof UI !== "undefined") {
+            UI.showToast(`${leftPlayerName} ha abbandonato la gara`, "fa-user-minus");
+          }
+        }
+
         if (msg.hostId) {
           const becameHost = (this.hostId !== msg.hostId && msg.hostId === this.myPlayerId);
           this.hostId = msg.hostId;
@@ -362,10 +424,30 @@ const NetworkEngine = {
         break;
       }
 
-      // --- PONG: calcolo latenza in millisecondi ---
+      // --- PONG: calcolo latenza & sincronizzazione orologio NTP al millisecondo ---
       case "pong": {
-        const now = performance.now();
-        this.ping = Math.round(now - msg.clientTime);
+        const nowLocal = Date.now();
+        const nowPerf = performance.now();
+        const rtt = Math.max(0, msg.perf0 ? (nowPerf - msg.perf0) : (msg.t0 ? (nowLocal - msg.t0) : (nowPerf - (msg.clientTime || 0))));
+        this.ping = Math.round(rtt);
+
+        // Algoritmo NTP per sincronizzazione orologio al millisecondo
+        if (typeof msg.serverTime === "number") {
+          // Stima dell'ora del server al momento della ricezione su questo client
+          const estimatedServerNow = msg.serverTime + (rtt / 2);
+          const sampleOffset = estimatedServerNow - nowLocal;
+
+          if (this.clockOffset === null) {
+            this.clockOffset = sampleOffset;
+            this.bestRtt = rtt;
+          } else {
+            // Campioni con RTT più basso hanno meno jitter e asimmetria: diamo maggior peso
+            const weight = rtt <= (this.bestRtt || rtt) ? 0.35 : 0.15;
+            if (rtt < (this.bestRtt || Infinity)) this.bestRtt = rtt;
+            this.clockOffset = this.clockOffset * (1 - weight) + sampleOffset * weight;
+          }
+        }
+
         if (this.lobbyPlayers[this.myPlayerId]) {
           this.lobbyPlayers[this.myPlayerId].ping = this.ping;
         }
@@ -400,7 +482,9 @@ const NetworkEngine = {
             msg.trackId || "monza",
             playersList,
             msg.laps || 3,
-            msg.countdownDuration || 4.5
+            msg.countdownDuration || 4.5,
+            msg.raceStartTime,
+            msg.serverTime
           );
         }
         break;
@@ -428,6 +512,10 @@ const NetworkEngine = {
             racer.finishTime = msg.finishTime;
             if (msg.bestLapTime) racer.bestLapTime = msg.bestLapTime;
           }
+          if (typeof UI !== "undefined") {
+            const driverName = (racer && racer.driverName) || `Pilota ${msg.id}`;
+            UI.showToast(`🏁 ${driverName} ha tagliato il traguardo!`, "fa-flag-checkered");
+          }
         }
         break;
       }
@@ -440,11 +528,25 @@ const NetworkEngine = {
   spawnPlayer(data) {
     if (!data || !data.id || data.id === this.myPlayerId) return;
 
+    const initX = typeof data.x === "number" ? data.x : 0;
+    const initY = typeof data.y === "number" ? data.y : 0;
+    const initZ = typeof data.z === "number" ? data.z : 0;
+    const initRotY = typeof data.rotY === "number" ? data.rotY : 0;
+    const initSpeed = typeof data.speed === "number" ? data.speed : 0;
+    const initVx = typeof data.vx === "number" ? data.vx : (Math.sin(initRotY) * initSpeed);
+    const initVy = typeof data.vy === "number" ? data.vy : 0;
+    const initVz = typeof data.vz === "number" ? data.vz : (Math.cos(initRotY) * initSpeed);
+    const initYawRate = typeof data.yawRate === "number" ? data.yawRate : 0;
+
     // Se esiste già, riposiziona
     if (remotePlayers[data.id]) {
       const p = remotePlayers[data.id];
-      p.targetPos.set(data.x || 0, data.y || 0, data.z || 0);
-      p.targetRotY = data.rotY || 0;
+      p.targetPos.set(initX, initY, initZ);
+      p.velocity.set(initVx, initVy, initVz);
+      p.targetRotY = initRotY;
+      p.yawRate = initYawRate;
+      p.targetSpeed = initSpeed;
+      p.lastPacketLocalTime = performance.now();
       if (p.mesh && GameApp.scene && p.mesh.parent !== GameApp.scene) {
         GameApp.scene.add(p.mesh);
       }
@@ -459,11 +561,6 @@ const NetworkEngine = {
 
     // Crea mesh 3D completa e distinta con il colore dell'avversario
     const carMesh = ProceduralAssets.buildCarMesh(carConfig, colorHex);
-
-    const initX = typeof data.x === "number" ? data.x : 0;
-    const initY = typeof data.y === "number" ? data.y : 0;
-    const initZ = typeof data.z === "number" ? data.z : 0;
-    const initRotY = typeof data.rotY === "number" ? data.rotY : 0;
 
     carMesh.position.set(initX, initY, initZ);
     carMesh.rotation.y = initRotY;
@@ -485,10 +582,22 @@ const NetworkEngine = {
       carId: data.carId || "hatchback",
       mesh: carMesh,
       nameSprite: nameSprite,
+      // Target ricevuti dall'ultimo pacchetto
       targetPos: new THREE.Vector3(initX, initY, initZ),
+      velocity: new THREE.Vector3(initVx, initVy, initVz),
       targetRotY: initRotY,
-      targetSpeed: 0,
+      yawRate: initYawRate,
+      targetSpeed: initSpeed,
       isDrifting: false,
+      // Dead reckoning & smoothing a delta-time indipendente
+      extrapolatedPos: new THREE.Vector3(initX, initY, initZ),
+      lastPacketLocalTime: performance.now(),
+      lastPacketServerTime: typeof data.t === "number" ? data.t : this.getServerTime(),
+      trackPitch: 0,
+      trackRoll: 0,
+      sampleIndex: data.sampleIndex || 0,
+      lap: data.lap || 1,
+      totalProgress: data.totalProgress || 0,
     };
 
     console.log(`[NetEngine] Mesh 3D istanziata in scena per: ${data.name || data.id}`);
@@ -562,6 +671,8 @@ const NetworkEngine = {
 
       // Recupera la vettura locale attiva
       let localX = 0, localY = 0, localZ = 0, localRotY = 0, localSpeed = 0, localDrift = false;
+      let localVx = 0, localVy = 0, localVz = 0, localYawRate = 0;
+      let localLap = 1, localSampleIndex = 0, localProgress = 0, localCurTime = 0, localBestTime = null, localFinished = false, localFinishTime = 0;
 
       if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.player) {
         const p = RaceEngine.player;
@@ -571,6 +682,17 @@ const NetworkEngine = {
         localRotY = p.heading + (p.driftAngle || 0) * 0.62;
         localSpeed = p.speed || 0;
         localDrift = Math.abs(p.driftAngle || 0) > 0.15;
+        localVx = typeof p.vx === "number" ? p.vx : (Math.sin(p.heading) * localSpeed);
+        localVy = typeof p.vy === "number" ? p.vy : 0;
+        localVz = typeof p.vz === "number" ? p.vz : (Math.cos(p.heading) * localSpeed);
+        localYawRate = typeof p.yawRate === "number" ? p.yawRate : 0;
+        localLap = p.lap || 1;
+        localSampleIndex = p.sampleIndex || 0;
+        localProgress = typeof p.totalProgress === "number" ? p.totalProgress : 0;
+        localCurTime = p.currentLapTime || 0;
+        localBestTime = p.bestLapTime || null;
+        localFinished = Boolean(p.finished);
+        localFinishTime = p.finishTime || 0;
       } else if (typeof GameApp !== "undefined" && GameApp.showroomCarMesh) {
         const m = GameApp.showroomCarMesh;
         localX = m.position.x;
@@ -581,16 +703,28 @@ const NetworkEngine = {
         return;
       }
 
-      // Invia pacchetto 'update' di trasformazione fisica
+      // Invia pacchetto 'update' di trasformazione fisica, vettori velocità e telemetria con timestamp NTP
       this.send({
         type: "update",
         id: this.myPlayerId,
+        t: this.getServerTime(),
         x: Number(localX.toFixed(2)),
         y: Number(localY.toFixed(2)),
         z: Number(localZ.toFixed(2)),
+        vx: Number(localVx.toFixed(2)),
+        vy: Number(localVy.toFixed(2)),
+        vz: Number(localVz.toFixed(2)),
         rotY: Number(localRotY.toFixed(3)),
+        yawRate: Number(localYawRate.toFixed(3)),
         speed: Number(localSpeed.toFixed(2)),
         isDrifting: localDrift,
+        lap: localLap,
+        sampleIndex: localSampleIndex,
+        totalProgress: Number(localProgress.toFixed(4)),
+        curTime: Math.round(localCurTime),
+        bestTime: localBestTime,
+        finished: localFinished,
+        finishTime: localFinishTime,
       });
     }, 33);
   },
@@ -604,9 +738,17 @@ const NetworkEngine = {
 
   startPingLoop() {
     this.stopPingLoop();
-    this.pingTimer = setInterval(() => {
-      this.send({ type: "ping", clientTime: performance.now() });
-    }, 1500);
+    const sendPing = () => {
+      if (!this.isConnected) return;
+      this.send({
+        type: "ping",
+        t0: Date.now(),
+        perf0: performance.now(),
+        clientTime: performance.now(),
+      });
+    };
+    sendPing();
+    this.pingTimer = setInterval(sendPing, 1000);
   },
 
   stopPingLoop() {
@@ -635,9 +777,12 @@ const NetworkEngine = {
   },
 
   // ---------------------------------------------------------------------------
-  // 5. INTERPOLAZIONE NEL RENDER LOOP (CHIAMATA OGNI FRAME DA GameApp.animate)
+  // 5. INTERPOLAZIONE NEL RENDER LOOP CON DEAD RECKONING & DELTA-TIME
   // ---------------------------------------------------------------------------
   update(dt) {
+    const safeDt = Math.min(Math.max(dt, 0.001), 0.1);
+    const nowLocal = performance.now();
+
     for (const id in remotePlayers) {
       const p = remotePlayers[id];
       if (p && p.mesh) {
@@ -646,14 +791,41 @@ const NetworkEngine = {
           GameApp.scene.add(p.mesh);
         }
 
-        p.mesh.position.lerp(p.targetPos, 0.2);
+        // 1. DEAD RECKONING EXTRAPOLATION
+        // Tempo trascorso dall'ultimo pacchetto ricevuto (in secondi)
+        const timeSincePacket = Math.max(0, (nowLocal - (p.lastPacketLocalTime || nowLocal)) / 1000);
+        // Limita l'estrapolazione a max 180ms per evitare proiezioni aberranti in caso di freeze/disconnessione
+        const extrapolateTime = Math.min(timeSincePacket, 0.18);
 
-        // 2. Allineamento rotazione con smoothing e wrap-around [-PI, +PI]
-        let diff = p.targetRotY - p.mesh.rotation.y;
+        // Posizione prevista = Posizione ricevuta + Velocità * tempo_trascorso
+        const extrapX = p.targetPos.x + p.velocity.x * extrapolateTime;
+        const extrapY = p.targetPos.y + p.velocity.y * extrapolateTime;
+        const extrapZ = p.targetPos.z + p.velocity.z * extrapolateTime;
+        p.extrapolatedPos.set(extrapX, extrapY, extrapZ);
+
+        // Rotazione prevista = Angolo ricevuto + yawRate * tempo_trascorso
+        const extrapRotY = p.targetRotY + p.yawRate * extrapolateTime;
+
+        // 2. BLENDING INDIPENDENTE DAL FRAMERATE (EXPONENTIAL DECAY CON DELTA-TIME)
+        // alpha = 1 - exp(-lambda * dt) garantisce la stessa velocità di convergenza a 30, 60 o 144 FPS
+        const posBlend = 1.0 - Math.exp(-14.0 * safeDt);
+        const rotBlend = 1.0 - Math.exp(-16.0 * safeDt);
+
+        // Snap immediato se l'errore di posizione supera 12 metri (es. respawn, salto tracciato)
+        const distSq = p.mesh.position.distanceToSquared(p.extrapolatedPos);
+        if (distSq > 144) {
+          p.mesh.position.copy(p.extrapolatedPos);
+        } else {
+          p.mesh.position.lerp(p.extrapolatedPos, posBlend);
+        }
+
+        // Allineamento rotazione con smoothing e wrap-around [-PI, +PI]
+        let diff = extrapRotY - p.mesh.rotation.y;
         while (diff < -Math.PI) diff += Math.PI * 2;
         while (diff > Math.PI) diff -= Math.PI * 2;
-        p.mesh.rotation.y += diff * 0.2;
+        p.mesh.rotation.y += diff * rotBlend;
 
+        // 3. Allineamento rollio e beccheggio alla superficie del tracciato 3D
         if (typeof RaceEngine !== "undefined" && RaceEngine.getTrackElevationAndNormal && RaceEngine.trackData) {
           p.mesh.rotation.order = "YXZ";
           const sinH = Math.sin(p.mesh.rotation.y);
@@ -666,17 +838,18 @@ const NetworkEngine = {
           const lSide = RaceEngine.getTrackElevationAndNormal(p.mesh.position.x - cosH * 0.95, p.mesh.position.z + sinH * 0.95, p.sampleIndex || 0);
           const tRoll = Math.atan2(rSide.y - lSide.y, 1.90);
 
-          p.trackPitch = THREE.MathUtils.lerp(p.trackPitch || 0, tPitch, 0.2);
-          p.trackRoll = THREE.MathUtils.lerp(p.trackRoll || 0, tRoll, 0.2);
+          const surfaceBlend = 1.0 - Math.exp(-10.0 * safeDt);
+          p.trackPitch = THREE.MathUtils.lerp(p.trackPitch || 0, tPitch, surfaceBlend);
+          p.trackRoll = THREE.MathUtils.lerp(p.trackRoll || 0, tRoll, surfaceBlend);
           p.mesh.rotation.x = p.trackPitch;
           p.mesh.rotation.z = p.trackRoll;
         }
 
-        // 3. Animazione visiva ruote ed effetti
+        // 4. Animazione visiva ruote ed effetti
         const ud = p.mesh.userData;
         if (ud) {
           if (ud.wheelMeshes) {
-            const wDelta = (p.targetSpeed / 0.37) * 0.016;
+            const wDelta = (p.targetSpeed / 0.37) * safeDt;
             ud.wheelMeshes.forEach((w) => {
               w.rotation.x += wDelta;
             });
@@ -709,6 +882,9 @@ const NetworkEngine = {
     const connClass = this.isConnected ? "text-emerald-400" : "text-rose-400";
     const connDot = this.isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500";
     const connText = this.isConnected ? "CONNESSO (LAN)" : "DISCONNESSO";
+    const clockSyncStr = this.clockOffset !== null
+      ? `${this.clockOffset >= 0 ? "+" : ""}${Math.round(this.clockOffset)} ms`
+      : "--";
 
     hud.innerHTML = `
       <div class="flex items-center justify-between gap-3 pb-1 border-b border-white/10">
@@ -717,6 +893,10 @@ const NetworkEngine = {
           <span class="font-bold tracking-wider ${connClass}">${connText}</span>
         </div>
         <span class="text-slate-300 font-mono text-xs font-bold">${this.ping} ms</span>
+      </div>
+      <div class="flex items-center justify-between gap-3 text-slate-300 text-[10px]">
+        <span>Sincro Orologio:</span>
+        <span class="font-bold text-emerald-400 font-mono">${clockSyncStr}</span>
       </div>
       <div class="flex items-center justify-between gap-3 text-slate-300 text-[10px]">
         <span>Giocatori in pista:</span>

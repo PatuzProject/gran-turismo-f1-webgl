@@ -389,10 +389,12 @@ const RaceEngine = {
     AudioEngine.setDrivingAudioActive(true);
   },
 
-  startLanSession(trackId, players, laps, countdownDuration, countdownStart) {
+  startLanSession(trackId, players, laps, countdownDuration, raceStartTime, serverTime) {
     this.ensureTelemetryBannerExists();
     this.mode = "lan_race";
     this.totalLaps = laps || 3;
+    this.raceStartTimeEpoch = raceStartTime || null;
+    this.countdownDuration = countdownDuration || 4.5;
 
     const allTracks = typeof TILE_TRACK_CATALOG !== "undefined"
       ? [...TRACK_CATALOG, ...TILE_TRACK_CATALOG]
@@ -467,9 +469,16 @@ const RaceEngine = {
 
     const totalSamples = this.trackData.samples.length;
 
-    // Lista piloti ordinata per slot di partenza
+    // Lista piloti ordinata in modo deterministico su tutti i client (Host in pole, poi ID)
+    const hostPlayerId = (typeof NetworkEngine !== "undefined" && NetworkEngine.hostId) || null;
     const playerList = Array.isArray(players) && players.length > 0
-      ? [...players].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      ? [...players].sort((a, b) => {
+          if (hostPlayerId) {
+            if (a.id === hostPlayerId) return -1;
+            if (b.id === hostPlayerId) return 1;
+          }
+          return String(a.id).localeCompare(String(b.id));
+        })
       : [myProfile];
 
     let mySlot = playerList.findIndex((p) => p.id === myId);
@@ -483,7 +492,7 @@ const RaceEngine = {
 
     const myPaint = myProfile.color ? parseInt(myProfile.color.replace("#", "0x"), 16) : null;
     this.player = this.createRacerEntity({
-      id: 0,
+      id: myId,
       carConfig: playerCarConfig,
       driverCode: (myProfile.name || "TU").slice(0, 3).toUpperCase(),
       driverName: (myProfile.name || "TU") + " (TU)",
@@ -515,14 +524,25 @@ const RaceEngine = {
       const pos = s.point.clone().addScaledVector(s.right, colOff);
       const heading = Math.atan2(s.tangent.x, s.tangent.z);
 
-      if (rem && rem.mesh) {
-        if (GameApp.scene && rem.mesh.parent !== GameApp.scene) {
-          GameApp.scene.add(rem.mesh);
+      const initProgress = -((totalSamples - sIdx) / totalSamples);
+
+      if (rem) {
+        rem.lap = 1;
+        rem.sampleIndex = sIdx;
+        rem.totalProgress = initProgress;
+        rem.curTime = 0;
+        rem.bestTime = null;
+        rem.finished = false;
+        rem.finishTime = 0;
+        if (rem.mesh) {
+          if (GameApp.scene && rem.mesh.parent !== GameApp.scene) {
+            GameApp.scene.add(rem.mesh);
+          }
+          rem.mesh.position.copy(pos);
+          rem.mesh.rotation.y = heading;
+          rem.targetPos.copy(pos);
+          rem.targetRotY = heading;
         }
-        rem.mesh.position.copy(pos);
-        rem.mesh.rotation.y = heading;
-        rem.targetPos.copy(pos);
-        rem.targetRotY = heading;
       }
 
       const remCarConfig = CAR_CATALOG.find((c) => c.id === otherP.carId) || CAR_CATALOG[0];
@@ -559,7 +579,9 @@ const RaceEngine = {
         sampleIndex: sIdx,
         lap: 1,
         hasStartedFirstLap: false,
-        totalProgress: -((totalSamples - sIdx) / totalSamples),
+        totalProgress: initProgress,
+        currentLapTime: 0,
+        bestLapTime: null,
         finished: false,
         finishTime: 0,
       });
@@ -579,9 +601,16 @@ const RaceEngine = {
     GameApp.camera.position.copy(this.camPos);
     GameApp.camera.lookAt(this.camLook);
 
-    // Countdown sincronizzato
-    this.countdownTimer = countdownDuration || 4.5;
-    this.totalCountdown = this.countdownTimer;
+    // Countdown sincronizzato al millisecondo tramite orologio NTP del server
+    if (this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+      const serverNow = NetworkEngine.getServerTime();
+      const remainingSeconds = (this.raceStartTimeEpoch - serverNow) / 1000;
+      this.countdownTimer = Math.max(0, remainingSeconds);
+      this.totalCountdown = this.countdownDuration || countdownDuration || 4.5;
+    } else {
+      this.countdownTimer = countdownDuration || 4.5;
+      this.totalCountdown = this.countdownTimer;
+    }
     this.lastLightLit = 0;
 
     // NASCONDI TUTTI I MENU E MOSTRA L'HUD DI GARA
@@ -636,6 +665,8 @@ const RaceEngine = {
     if (posTotal) posTotal.textContent = `/ ${this.allRacers.length}`;
     const lapTotal = document.getElementById("hud-lap-total");
     if (lapTotal) lapTotal.textContent = `/ ${this.totalLaps}`;
+
+    this.updateHUD(performance.now());
 
     AudioEngine.setDrivingAudioActive(true);
     UI.showToast(`Gara LAN Avviata! ${this.allRacers.length} piloti in pista!`, "fa-users");
@@ -799,7 +830,12 @@ const RaceEngine = {
     // F1 5-Light Start Sequence
     const gantryEl = document.getElementById("hud-f1-gantry");
     if (this.countdownTimer > 0) {
-      this.countdownTimer -= dt;
+      if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+        const sNow = NetworkEngine.getServerTime();
+        this.countdownTimer = Math.max(0, (this.raceStartTimeEpoch - sNow) / 1000);
+      } else {
+        this.countdownTimer -= dt;
+      }
       if (gantryEl) {
         gantryEl.classList.remove("hidden");
         gantryEl.classList.add("flex");
@@ -882,7 +918,11 @@ const RaceEngine = {
       }
     }
 
-    this.raceElapsedSeconds += dt;
+    if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+      this.raceElapsedSeconds = Math.max(0, (NetworkEngine.getServerTime() - this.raceStartTimeEpoch) / 1000);
+    } else {
+      this.raceElapsedSeconds += dt;
+    }
 
     // Update Player Physics
     if (!this.player.finished) {
@@ -901,11 +941,6 @@ const RaceEngine = {
 
     // Update Smoke Particles
     this.updateSmokeParticles(dt);
-
-    // Update Network Remote Players (Smoothing & Lerp a 60 FPS)
-    if (typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
-      NetworkEngine.update(dt);
-    }
 
     // Aggiorna posizione e progresso dei giocatori remoti per classifica e minimap
     if (this.mode === "lan_race" && typeof remotePlayers !== "undefined" && this.trackData) {
@@ -931,12 +966,14 @@ const RaceEngine = {
                 closestIdx = testIdx;
               }
             }
-            if (racer.sampleIndex > N - 20 && closestIdx < 20) {
+            if (racer.sampleIndex > N - 160 && closestIdx < 160) {
               racer.lap += 1;
               racer.hasStartedFirstLap = true;
             }
             racer.sampleIndex = closestIdx;
-            racer.totalProgress = (racer.hasStartedFirstLap ? racer.lap - 1 : 0) + (closestIdx / N);
+            if (typeof rem.totalProgress !== "number") {
+              racer.totalProgress = (racer.hasStartedFirstLap ? racer.lap - 1 : -1) + (closestIdx / N);
+            }
           }
         }
       }
@@ -1089,7 +1126,9 @@ const RaceEngine = {
     const steeringAngularVel = car.steerAngle * turnAuthority * directionSign;
 
     // Combine driver steering with collision-induced yaw torque
-    car.heading += (steeringAngularVel + (car.angularVelocity || 0)) * dt;
+    const totalYawRate = steeringAngularVel + (car.angularVelocity || 0);
+    car.heading += totalYawRate * dt;
+    car.yawRate = totalYawRate;
     if (car.angularVelocity) {
       car.angularVelocity = THREE.MathUtils.damp(car.angularVelocity, 0, 7.8, dt);
       if (Math.abs(car.angularVelocity) < 0.005) car.angularVelocity = 0;
@@ -1135,8 +1174,13 @@ const RaceEngine = {
     const rightX = fwdZ;
     const rightZ = -fwdX;
 
-    car.position.x += (fwdX * car.speed + rightX * (car.lateralVel || 0)) * dt;
-    car.position.z += (fwdZ * car.speed + rightZ * (car.lateralVel || 0)) * dt;
+    const vx = fwdX * car.speed + rightX * (car.lateralVel || 0);
+    const vz = fwdZ * car.speed + rightZ * (car.lateralVel || 0);
+    car.position.x += vx * dt;
+    car.position.z += vz * dt;
+    car.vx = vx;
+    car.vz = vz;
+    car.vy = 0;
 
     this.updateSplineProgressAndWalls(car, dt);
     this.updateGearAndRPM(car, throttle, dt);
@@ -1664,8 +1708,13 @@ const RaceEngine = {
 
       if ((this.mode === "race" || this.mode === "lan_race") && car.lap > this.totalLaps && !car.finished) {
         car.finished = true;
-        const nowMs = performance.now();
-        const elapsed = this.raceStartEpoch ? (nowMs - this.raceStartEpoch) : (this.raceElapsedSeconds * 1000);
+        let elapsed;
+        if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+          elapsed = Math.max(1000, Math.round(NetworkEngine.getServerTime() - this.raceStartTimeEpoch));
+        } else {
+          const nowMs = performance.now();
+          elapsed = this.raceStartEpoch ? (nowMs - this.raceStartEpoch) : (this.raceElapsedSeconds * 1000);
+        }
         car.finishTime = Math.max(1000, Math.round(elapsed));
 
         if (car.isPlayer) {
@@ -2648,7 +2697,9 @@ const RaceEngine = {
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       if (a.finished) return -1;
       if (b.finished) return 1;
-      return b.totalProgress - a.totalProgress;
+      const progA = typeof a.totalProgress === "number" && !isNaN(a.totalProgress) ? a.totalProgress : 0;
+      const progB = typeof b.totalProgress === "number" && !isNaN(b.totalProgress) ? b.totalProgress : 0;
+      return progB - progA;
     });
   },
 
@@ -2735,7 +2786,7 @@ const RaceEngine = {
     }
 
     const displayLap =
-      this.mode === "race"
+      (this.mode === "race" || this.mode === "lan_race")
         ? Math.min(this.totalLaps, Math.max(1, car.lap))
         : Math.max(1, car.lap);
     document.getElementById("hud-lap").textContent = displayLap;
@@ -2749,27 +2800,42 @@ const RaceEngine = {
       );
     }
 
-    if (this.mode === "race") {
+    if (this.mode === "race" || this.mode === "lan_race") {
       const standings = this.getStandings();
-      const pos = standings.findIndex((r) => r.isPlayer) + 1;
-      document.getElementById("hud-position").textContent = pos;
+      const myId = (typeof NetworkEngine !== "undefined" && (NetworkEngine.myPlayerId || NetworkEngine.myId)) || null;
+      const myIndex = standings.findIndex((r) => r.isPlayer || (myId && r.id === myId));
+      const pos = myIndex >= 0 ? myIndex + 1 : 1;
+      const posEl = document.getElementById("hud-position");
+      if (posEl) posEl.textContent = pos;
 
-      const leader = standings[0];
-      if (pos === 1) {
-        document.getElementById("hud-gap").textContent = "LEADER";
-        document.getElementById("hud-gap").className =
-          "font-racing font-bold text-emerald-400";
-      } else {
-        const progressDiff = Math.max(
-          0,
-          leader.totalProgress - car.totalProgress,
-        );
-        const approxSeconds =
-          (progressDiff * this.trackData.totalLength) / Math.max(28, car.speed);
-        document.getElementById("hud-gap").textContent =
-          `+${approxSeconds.toFixed(2)}s`;
-        document.getElementById("hud-gap").className =
-          "font-racing font-bold text-amber-300";
+      const leader = standings[0] || car;
+      const gapEl = document.getElementById("hud-gap");
+      if (gapEl) {
+        if (pos === 1) {
+          gapEl.textContent = "LEADER";
+          gapEl.className = "font-racing font-bold text-emerald-400";
+        } else {
+          if (this.countdownTimer > 0) {
+            gapEl.textContent = `P${pos}`;
+            gapEl.className = "font-racing font-bold text-amber-300";
+          } else {
+            const progressDiff = Math.max(
+              0,
+              (leader.totalProgress || 0) - (car.totalProgress || 0),
+            );
+            if (progressDiff >= 1.0) {
+              const lapsBehind = Math.floor(progressDiff);
+              gapEl.textContent = `+${lapsBehind} ${lapsBehind === 1 ? "GIRO" : "GIRI"}`;
+              gapEl.className = "font-racing font-bold text-rose-400";
+            } else {
+              const speedRef = Math.max(20, Math.abs(car.speed), Math.abs(leader.speed || 0));
+              const trackLen = (this.trackData && this.trackData.totalLength) || 1200;
+              const approxSeconds = (progressDiff * trackLen) / speedRef;
+              gapEl.textContent = `+${approxSeconds.toFixed(2)}s`;
+              gapEl.className = "font-racing font-bold text-amber-300";
+            }
+          }
+        }
       }
 
       if (nowMs - this.lastHudLeaderboardUpdate > 160) {
@@ -2787,53 +2853,93 @@ const RaceEngine = {
     if (this.raceElapsedSeconds < 3.5 && this.countdownTimer <= 0) {
       statusEl.textContent = "TURN 1 FORMATION";
     } else {
-      statusEl.textContent = `GIRO ${Math.min(this.totalLaps, Math.max(1, leader.lap))}/${this.totalLaps}`;
+      statusEl.textContent = `GIRO ${Math.min(this.totalLaps, Math.max(1, (leader && leader.lap) || 1))}/${this.totalLaps}`;
     }
 
     const diffTagEl = document.getElementById("hud-diff-tag");
     if (diffTagEl) {
-      const diffConfig = this.getDifficultyConfig();
-      diffTagEl.textContent = `${diffConfig.name.toUpperCase()} (x${diffConfig.multiplier.toFixed(1)})`;
-      diffTagEl.className = `px-1.5 py-0.2 rounded text-[8px] font-racing font-bold ${diffConfig.badgeBg}`;
+      if (this.mode === "lan_race") {
+        diffTagEl.textContent = `LAN ONLINE (${this.allRacers.length}P)`;
+        diffTagEl.className = "px-1.5 py-0.2 rounded text-[8px] font-racing font-bold bg-emerald-500/30 text-emerald-300 border border-emerald-400/30";
+      } else {
+        const diffConfig = this.getDifficultyConfig();
+        diffTagEl.textContent = `${diffConfig.name.toUpperCase()} (x${diffConfig.multiplier.toFixed(1)})`;
+        diffTagEl.className = `px-1.5 py-0.2 rounded text-[8px] font-racing font-bold ${diffConfig.badgeBg}`;
+      }
     }
 
+    const myId = (typeof NetworkEngine !== "undefined" && (NetworkEngine.myPlayerId || NetworkEngine.myId)) || null;
+
     container.innerHTML = standings
+      .slice(0, 10)
       .map((r, idx) => {
         const rank = idx + 1;
         let gapStr = "LEADER";
-        if (idx > 0) {
-          const pDiff = Math.max(0, leader.totalProgress - r.totalProgress);
-          const sec = (pDiff * this.trackData.totalLength) / 48;
-          gapStr = `+${sec.toFixed(1)}s`;
+        if (idx > 0 && leader) {
+          if (r.finished && leader.finished) {
+            const sec = Math.max(0, (r.finishTime - leader.finishTime) / 1000);
+            gapStr = `+${sec.toFixed(1)}s`;
+          } else {
+            const pDiff = Math.max(0, (leader.totalProgress || 0) - (r.totalProgress || 0));
+            if (pDiff >= 1.0) {
+              const laps = Math.floor(pDiff);
+              gapStr = `+${laps}L`;
+            } else {
+              const speedRef = Math.max(22, Math.abs(r.speed || 0), Math.abs(leader.speed || 0));
+              const trackLen = (this.trackData && this.trackData.totalLength) || 1200;
+              const sec = (pDiff * trackLen) / speedRef;
+              gapStr = `+${sec.toFixed(1)}s`;
+            }
+          }
         }
-        const hexColor = "#" + r.teamColorHex.toString(16).padStart(6, "0");
-        const rowClass = r.isPlayer
-          ? "bg-amber-400/25 border border-amber-400/60 text-white font-bold"
+
+        let hexColor = "#00f0ff";
+        if (r.teamColorHex) {
+          hexColor = typeof r.teamColorHex === "number"
+            ? "#" + r.teamColorHex.toString(16).padStart(6, "0")
+            : String(r.teamColorHex);
+        }
+
+        const isMe = r.isPlayer || (myId && r.id === myId);
+        const rowClass = isMe
+          ? "bg-amber-400/25 border border-amber-400/60 text-white font-bold shadow-sm"
           : "bg-slate-900/75 text-slate-300";
 
-        let badgeStyle = "bg-cyan-500/30 text-cyan-200";
-        if (r.aiStatusTag === "LUNGO!") badgeStyle = "bg-rose-500/40 text-rose-200";
-        else if (r.aiStatusTag === "DRS") badgeStyle = "bg-emerald-500/30 text-emerald-200 font-bold";
-        else if (r.aiStatusTag === "SCIA") badgeStyle = "bg-amber-400/30 text-amber-200 font-bold";
-        else if (r.aiStatusTag === "SORPASSO") badgeStyle = "bg-purple-500/40 text-purple-200 font-bold animate-pulse";
-        else if (r.aiStatusTag === "DIFESA") badgeStyle = "bg-blue-500/40 text-blue-200 font-bold";
-        else if (r.aiStatusTag === "RECUPERO!") badgeStyle = "bg-orange-500/40 text-orange-200";
-        else if (r.aiStatusTag === "RIENTRO!") badgeStyle = "bg-amber-500/40 text-amber-200";
+        let badgeTag = "";
+        if (this.mode === "lan_race") {
+          const isHost = (typeof NetworkEngine !== "undefined" && NetworkEngine.hostId && r.id === NetworkEngine.hostId);
+          if (isMe) {
+            badgeTag = '<span class="px-1 rounded text-[8px] bg-cyan-500/30 text-cyan-200">TU</span>';
+          } else if (isHost) {
+            badgeTag = '<span class="px-1 rounded text-[8px] bg-amber-400/30 text-amber-200 font-bold">HOST</span>';
+          }
+        } else {
+          let badgeStyle = "bg-cyan-500/30 text-cyan-200";
+          if (r.aiStatusTag === "LUNGO!") badgeStyle = "bg-rose-500/40 text-rose-200";
+          else if (r.aiStatusTag === "DRS") badgeStyle = "bg-emerald-500/30 text-emerald-200 font-bold";
+          else if (r.aiStatusTag === "SCIA") badgeStyle = "bg-amber-400/30 text-amber-200 font-bold";
+          else if (r.aiStatusTag === "SORPASSO") badgeStyle = "bg-purple-500/40 text-purple-200 font-bold animate-pulse";
+          else if (r.aiStatusTag === "DIFESA") badgeStyle = "bg-blue-500/40 text-blue-200 font-bold";
+          else if (r.aiStatusTag === "RECUPERO!") badgeStyle = "bg-orange-500/40 text-orange-200";
+          else if (r.aiStatusTag === "RIENTRO!") badgeStyle = "bg-amber-500/40 text-amber-200";
 
-        const badgeTag =
-          !r.isPlayer && r.aiStatusTag
-            ? `<span class="px-1 rounded text-[8px] ${badgeStyle}">${r.aiStatusTag}</span>`
-            : "";
+          badgeTag =
+            !r.isPlayer && r.aiStatusTag
+              ? `<span class="px-1 rounded text-[8px] ${badgeStyle}">${r.aiStatusTag}</span>`
+              : "";
+        }
+
+        const driverCode = r.driverCode || (r.driverName ? r.driverName.slice(0, 3).toUpperCase() : "DRV");
 
         return `
                 <div class="flex items-center justify-between px-2 py-1 rounded-lg ${rowClass}">
                     <div class="flex items-center gap-2">
                         <span class="w-4 text-right text-[10px] ${rank <= 3 ? "text-amber-400 font-black" : "text-slate-400"}">${rank}</span>
                         <span class="w-1 h-3.5 rounded-full" style="background:${hexColor}"></span>
-                        <span class="tracking-wider ${r.isPlayer ? "text-amber-300" : ""}">${r.driverCode}</span>
+                        <span class="tracking-wider ${isMe ? "text-amber-300 font-bold" : ""}">${driverCode}</span>
                         ${badgeTag}
                     </div>
-                    <span class="text-[10px] ${idx === 0 ? "text-emerald-400" : "text-slate-400"}">${gapStr}</span>
+                    <span class="text-[10px] ${idx === 0 ? "text-emerald-400 font-bold" : "text-slate-400 font-mono"}">${gapStr}</span>
                 </div>
             `;
       })

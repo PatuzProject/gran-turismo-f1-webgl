@@ -32,6 +32,13 @@ try {
 
 const PORT = process.env.PORT || 3000;
 
+process.on("uncaughtException", (err) => {
+  console.warn("[LAN SERVER] Errore non gestito:", err.message);
+});
+process.on("unhandledRejection", (reason) => {
+  console.warn("[LAN SERVER] Rejection non gestita:", reason);
+});
+
 // MIME types per servire i file statici
 const MIME_TYPES = {
   ".html": "text/html; charset=UTF-8",
@@ -251,36 +258,62 @@ wss.on("connection", (ws, req) => {
           const pId = msg.id || socketToId.get(ws);
           if (!pId) return;
 
-          // Aggiorna lo stato in memoria
+          // Aggiorna lo stato in memoria inclusa la telemetria di gara ed estrapolazione
           if (players[pId]) {
             players[pId].x = msg.x;
             players[pId].y = msg.y;
             players[pId].z = msg.z;
+            players[pId].vx = typeof msg.vx === "number" ? msg.vx : 0;
+            players[pId].vy = typeof msg.vy === "number" ? msg.vy : 0;
+            players[pId].vz = typeof msg.vz === "number" ? msg.vz : 0;
             players[pId].rotY = msg.rotY;
+            players[pId].yawRate = typeof msg.yawRate === "number" ? msg.yawRate : 0;
             players[pId].speed = msg.speed || 0;
             players[pId].isDrifting = Boolean(msg.isDrifting);
+            players[pId].t = typeof msg.t === "number" ? msg.t : Date.now();
+            if (typeof msg.lap === "number") players[pId].lap = msg.lap;
+            if (typeof msg.sampleIndex === "number") players[pId].sampleIndex = msg.sampleIndex;
+            if (typeof msg.totalProgress === "number") players[pId].totalProgress = msg.totalProgress;
+            if (typeof msg.curTime === "number") players[pId].curTime = msg.curTime;
+            if (msg.bestTime) players[pId].bestTime = msg.bestTime;
+            if (typeof msg.finished === "boolean") players[pId].finished = msg.finished;
+            if (typeof msg.finishTime === "number") players[pId].finishTime = msg.finishTime;
           }
 
           // BROADCAST SELETTIVO IMMEDIATO a tutti gli ALTRI client eccetto il mittente
           broadcastExcept(ws, {
             type: "update",
             id: pId,
+            t: typeof msg.t === "number" ? msg.t : Date.now(),
             x: msg.x,
             y: msg.y,
             z: msg.z,
+            vx: typeof msg.vx === "number" ? msg.vx : 0,
+            vy: typeof msg.vy === "number" ? msg.vy : 0,
+            vz: typeof msg.vz === "number" ? msg.vz : 0,
             rotY: msg.rotY,
+            yawRate: typeof msg.yawRate === "number" ? msg.yawRate : 0,
             speed: msg.speed || 0,
             isDrifting: Boolean(msg.isDrifting),
+            lap: msg.lap || 1,
+            sampleIndex: msg.sampleIndex || 0,
+            totalProgress: typeof msg.totalProgress === "number" ? msg.totalProgress : 0,
+            curTime: msg.curTime || 0,
+            bestTime: msg.bestTime || null,
+            finished: Boolean(msg.finished),
+            finishTime: msg.finishTime || 0,
           });
           break;
         }
 
         // =====================================================================
-        // 5. HEARTBEAT PING / PONG (Latenza RTT)
+        // 5. HEARTBEAT PING / PONG (Latenza RTT & Sincronizzazione Orologio NTP)
         // =====================================================================
         case "ping": {
           sendJSON(ws, {
             type: "pong",
+            t0: msg.t0,
+            perf0: msg.perf0,
             clientTime: msg.clientTime,
             serverTime: Date.now(),
           });
@@ -288,7 +321,7 @@ wss.on("connection", (ws, req) => {
         }
 
         // =====================================================================
-        // 6. AVVIO GARA SINCRONIZZATO (COUNTDOWN GLOBALE)
+        // 6. AVVIO GARA SINCRONIZZATO (COUNTDOWN GLOBALE AL MILLISECONDO)
         // =====================================================================
         case "start_race": {
           const pId = socketToId.get(ws);
@@ -301,6 +334,19 @@ wss.on("connection", (ws, req) => {
           const trackId = msg.trackId || roomSettings.trackId || "monza";
           const laps = msg.laps || roomSettings.laps || 3;
           const countdownDuration = msg.countdownDuration || 4.5;
+          const nowServer = Date.now();
+          const raceStartTime = nowServer + Math.round(countdownDuration * 1000);
+
+          // Reset stato e telemetria gara per tutti i concorrenti
+          for (const pid in players) {
+            players[pid].lap = 1;
+            players[pid].sampleIndex = 0;
+            players[pid].totalProgress = 0;
+            players[pid].finished = false;
+            players[pid].finishTime = 0;
+            players[pid].curTime = 0;
+            players[pid].bestTime = null;
+          }
 
           console.log(`[LAN] Segnale di partenza gara inviato dall'Host (${pId}) a tutti i ${Object.keys(players).length} giocatori`);
           broadcastAll({
@@ -309,7 +355,9 @@ wss.on("connection", (ws, req) => {
             countdownDuration: countdownDuration,
             laps: laps,
             players: Object.values(players),
-            startTime: Date.now(),
+            serverTime: nowServer,
+            startTime: nowServer,
+            raceStartTime: raceStartTime,
           });
           break;
         }
@@ -318,9 +366,15 @@ wss.on("connection", (ws, req) => {
         // 7. TRAGUARDO GARA (FINISH_RACE)
         // =====================================================================
         case "finish_race": {
+          const pId = msg.id || socketToId.get(ws);
+          if (pId && players[pId]) {
+            players[pId].finished = true;
+            players[pId].finishTime = msg.finishTime;
+            if (msg.bestLapTime) players[pId].bestLapTime = msg.bestLapTime;
+          }
           broadcastAll({
             type: "finish_race",
-            id: msg.id,
+            id: pId,
             finishTime: msg.finishTime,
             bestLapTime: msg.bestLapTime,
           });
@@ -330,6 +384,17 @@ wss.on("connection", (ws, req) => {
         // =====================================================================
         // 8. ALTRI EVENTI DI GARA (checkpoint_pass, ecc.)
         // =====================================================================
+        case "checkpoint_pass": {
+          const pId = msg.id || socketToId.get(ws);
+          if (pId && players[pId]) {
+            players[pId].lap = msg.lap;
+            players[pId].sampleIndex = msg.sampleIndex;
+            players[pId].totalProgress = msg.totalProgress;
+          }
+          broadcastExcept(ws, msg);
+          break;
+        }
+
         default: {
           broadcastExcept(ws, msg);
           break;
@@ -392,6 +457,21 @@ function getLocalIps() {
   }
   return ips;
 }
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\n==================================================================`);
+    console.error(`[ERRORE] La porta ${PORT} è già occupata da un'altra istanza o processo!`);
+    console.error(`==================================================================`);
+    console.error(`👉 Per terminare la vecchia istanza su Windows (PowerShell):`);
+    console.error(`   Get-Process node | Stop-Process -Force`);
+    console.error(`👉 Oppure avvia il server su un'altra porta:`);
+    console.error(`   $env:PORT=3001; node server.js\n`);
+    process.exit(1);
+  } else {
+    console.error("[ERRORE SERVER]", err);
+  }
+});
 
 server.listen(PORT, "0.0.0.0", () => {
   const ips = getLocalIps();
