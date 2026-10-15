@@ -1,0 +1,24 @@
+{
+  "name": "gran-turismo-f1-webgl",
+  "version": "2.0.0",
+  "description": "Gran Turismo F1 & Trackmania Arcade Simulator with LAN Multiplayer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "threejs",
+    "webgl",
+    "racing",
+    "multiplayer",
+    "lan",
+    "trackmania",
+    "arcade"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
+
