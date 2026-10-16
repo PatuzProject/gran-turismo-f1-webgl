@@ -6,6 +6,35 @@
 const TrackBuilder = {
   SAMPLE_COUNT: 1500,
 
+  // ── Calcolo Metrico Unificato Griglia di Partenza FIA F1 ─────────────────────
+  getGridSlotTransform(samples, totalLength, roadWidth, slotIndex, poleSide = "left") {
+    const N = samples.length;
+    const ds = totalLength / N;
+    // Distanza metrica FIA: Pole a 10.0m prima del traguardo, passo costante di 8.0m tra le righe
+    const slotDist = 10.0 + slotIndex * 8.0;
+    const stepBackSamples = Math.max(1, Math.round(slotDist / ds));
+    const sampleIndex = (N - stepBackSamples + N) % N;
+    const sample = samples[sampleIndex];
+
+    // Lato ufficiale FIA della Pole Position ('left' o 'right')
+    const poleSign = poleSide === "right" ? 1 : -1;
+    const colSign = (slotIndex % 2 === 0) ? poleSign : -poleSign;
+    // Offset laterale: 2.4m dalla mezzeria (interasse colonne 4.8m, luce centrale 2.8m)
+    const lateralOffset = colSign * 2.4;
+
+    const point = sample.point.clone().addScaledVector(sample.right, lateralOffset);
+    const heading = Math.atan2(sample.tangent.x, sample.tangent.z);
+
+    return {
+      sampleIndex,
+      lateralOffset,
+      point,
+      heading,
+      u: sample.u,
+      sample,
+    };
+  },
+
   buildTrackEnvironment(scene, trackConfig, refCarPhysics) {
     const trackGroup = new THREE.Group();
     scene.add(trackGroup);
@@ -30,8 +59,8 @@ const TrackBuilder = {
 
     const groundMat = new THREE.MeshStandardMaterial({
       color: trackConfig.groundColor,
-      roughness: trackConfig.id === "monaco" ? 0.2 : 0.82,
-      metalness: trackConfig.id === "monaco" ? 0.72 : 0.08,
+      roughness: 0.82,
+      metalness: 0.08,
     });
     const groundPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(4200, 4200),
@@ -92,7 +121,7 @@ const TrackBuilder = {
           idealPoint: pt.clone(),
           targetSpeed: refCarPhysics.maxSpeed,
           isDRS: isDRS,
-          isTurbo: i > 20 && i % 160 >= 0 && i % 160 < 16,
+          isTurbo: i > 20 && (i % 160) < 16,
         });
       }
 
@@ -224,8 +253,8 @@ const TrackBuilder = {
       normalMap: normalMap,
       normalScale: new THREE.Vector2(0.85, 0.85),
       roughnessMap: roughnessMap,
-      roughness: trackConfig.id === "monaco" ? 0.28 : 0.48,
-      metalness: trackConfig.id === "monaco" ? 0.42 : 0.22,
+      roughness: 0.48,
+      metalness: 0.22,
       envMapIntensity: 1.35,
       clearcoat: 0.22,
       clearcoatRoughness: 0.1,
@@ -239,7 +268,7 @@ const TrackBuilder = {
     }
     trackGroup.add(roadMesh);
 
-    const turboPads = this.buildTurboPads(trackGroup, samples, halfWidth);
+    const turboPads = this.buildTurboPads(trackGroup, samples);
 
     const gravelGeo = new THREE.BufferGeometry();
     gravelGeo.setAttribute(
@@ -249,11 +278,7 @@ const TrackBuilder = {
     gravelGeo.setIndex(gravelIndices);
     gravelGeo.computeVertexNormals();
     const vergeColor =
-      trackConfig.id === "monaco"
-        ? 0x1e293b
-        : trackConfig.id === "silverstone"
-          ? 0x334155
-          : 0xc2a878;
+      trackConfig.id === "silverstone" ? 0x334155 : 0xc2a878;
     trackGroup.add(
       new THREE.Mesh(
         gravelGeo,
@@ -283,7 +308,7 @@ const TrackBuilder = {
     wallGeo.setIndex(wallIndices);
     wallGeo.computeVertexNormals();
     const wallMat = new THREE.MeshPhysicalMaterial({
-      color: trackConfig.id === "monaco" ? 0xfacc15 : 0x475569,
+      color: 0x475569,
       metalness: 0.55,
       roughness: 0.35,
       clearcoat: 0.3,
@@ -334,6 +359,7 @@ const TrackBuilder = {
       samples,
       trackConfig,
       halfWidth,
+      totalLength,
     );
 
     this.buildDRSGatesAndBrakingBoards(
@@ -497,7 +523,7 @@ const TrackBuilder = {
     return false;
   },
 
-  buildStartFinishAndPitComplex(trackGroup, samples, trackConfig, halfWidth) {
+  buildStartFinishAndPitComplex(trackGroup, samples, trackConfig, halfWidth, totalLength) {
     const startSample = samples[0];
     const gantryGroup = new THREE.Group();
     gantryGroup.position.copy(startSample.point);
@@ -553,79 +579,101 @@ const TrackBuilder = {
     trackGroup.add(gantryGroup);
 
     const N = samples.length;
-    const slotGeo = new THREE.PlaneGeometry(2.6, 4.8);
-    slotGeo.rotateX(-Math.PI / 2);
-    const slotMat = new THREE.MeshBasicMaterial({
-      color: 0x00f0ff,
-      wireframe: true,
-    });
+    const effLength = totalLength || (N * 3.5);
+    const ds = effLength / N;
+    const poleSide = trackConfig.poleSide || "left";
 
-    for (let row = 0; row < 12; row++) {
-      const sIdx = (N - 18 - row * 12 + N) % N;
-      const s = samples[sIdx];
-      const colOffset = row % 2 === 0 ? -3.8 : 3.8;
-      const slotMesh = new THREE.Mesh(slotGeo, slotMat);
-      const pos = s.point.clone().addScaledVector(s.right, colOffset);
-      slotMesh.position.set(pos.x, pos.y + 0.065, pos.z);
-      slotMesh.rotation.y = Math.atan2(s.tangent.x, s.tangent.z);
-      trackGroup.add(slotMesh);
+    // Piazzole di Partenza FIA F1: box regolamentare 2.4m x 5.0m con linea frontale bianca di stop
+    const boxGeo = new THREE.PlaneGeometry(2.4, 5.0);
+    boxGeo.rotateX(-Math.PI / 2);
+
+    const stopLineGeo = new THREE.PlaneGeometry(2.4, 0.42);
+    stopLineGeo.rotateX(-Math.PI / 2);
+
+    for (let slot = 0; slot < 12; slot++) {
+      const trans = this.getGridSlotTransform(samples, effLength, trackConfig.roadWidth, slot, poleSide);
+      const slotGroup = new THREE.Group();
+      slotGroup.position.set(trans.point.x, trans.point.y + 0.045, trans.point.z);
+      slotGroup.rotation.y = trans.heading;
+
+      // Linea di arresto frontale bianca (stop line FIA)
+      const stopLineMesh = new THREE.Mesh(
+        stopLineGeo,
+        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      );
+      stopLineMesh.position.set(0, 0.005, 2.3);
+      slotGroup.add(stopLineMesh);
+
+      // Box piazzola (Pole dorata 0xffbe0b, altre ciano 0x00f0ff)
+      const boxMesh = new THREE.Mesh(
+        boxGeo,
+        new THREE.MeshBasicMaterial({
+          color: slot === 0 ? 0xffbe0b : 0x00f0ff,
+          wireframe: true,
+        }),
+      );
+      slotGroup.add(boxMesh);
+
+      trackGroup.add(slotGroup);
     }
 
-    if (trackConfig.id !== "monaco") {
-      const pitSample = samples[N - 65];
-      const pitPos = pitSample.point
-        .clone()
-        .addScaledVector(pitSample.right, halfWidth + 11.5);
-      const pitFront = pitPos.clone().addScaledVector(pitSample.tangent, 45);
-      const pitBack = pitPos.clone().addScaledVector(pitSample.tangent, -45);
+    // Allineamento realistico: il centro dei box si trova a metà griglia (~54m prima del traguardo)
+    const pitDist = 54.0;
+    const pitStepBack = Math.max(1, Math.round(pitDist / ds));
+    const pitSampleIdx = (N - pitStepBack + N) % N;
+    const pitSample = samples[pitSampleIdx];
+    const pitPos = pitSample.point
+      .clone()
+      .addScaledVector(pitSample.right, halfWidth + 11.5);
+    const pitFront = pitPos.clone().addScaledVector(pitSample.tangent, 45);
+    const pitBack = pitPos.clone().addScaledVector(pitSample.tangent, -45);
 
-      const safe =
-        !this.isTooCloseToTrack(pitPos, samples, halfWidth + 6.0, N - 65, 80) &&
-        !this.isTooCloseToTrack(pitFront, samples, halfWidth + 6.0, N - 65, 80) &&
-        !this.isTooCloseToTrack(pitBack, samples, halfWidth + 6.0, N - 65, 80);
+    const safe =
+      !this.isTooCloseToTrack(pitPos, samples, halfWidth + 6.0, pitSampleIdx, 80) &&
+      !this.isTooCloseToTrack(pitFront, samples, halfWidth + 6.0, pitSampleIdx, 80) &&
+      !this.isTooCloseToTrack(pitBack, samples, halfWidth + 6.0, pitSampleIdx, 80);
 
-      if (safe) {
-        const pitGroup = new THREE.Group();
-        pitGroup.position.copy(pitPos);
-        pitGroup.rotation.y = Math.atan2(pitSample.tangent.x, pitSample.tangent.z);
+    if (safe) {
+      const pitGroup = new THREE.Group();
+      pitGroup.position.copy(pitPos);
+      pitGroup.rotation.y = Math.atan2(pitSample.tangent.x, pitSample.tangent.z);
 
-        const pitBuilding = new THREE.Mesh(
-          new THREE.BoxGeometry(10, 9.5, 95),
-          new THREE.MeshStandardMaterial({
-            color: 0x1e293b,
-            metalness: 0.5,
-            roughness: 0.3,
-          }),
-        );
-        pitBuilding.position.set(0, 4.75, 0);
+      const pitBuilding = new THREE.Mesh(
+        new THREE.BoxGeometry(10, 9.5, 95),
+        new THREE.MeshStandardMaterial({
+          color: 0x1e293b,
+          metalness: 0.5,
+          roughness: 0.3,
+        }),
+      );
+      pitBuilding.position.set(0, 4.75, 0);
 
-        const pitRoof = new THREE.Mesh(
-          new THREE.BoxGeometry(14, 1.2, 102),
-          new THREE.MeshStandardMaterial({
-            color: 0x0f172a,
-            emissive: new THREE.Color(trackConfig.themeColor),
-            emissiveIntensity: 0.85,
-          }),
-        );
-        pitRoof.position.set(-1.5, 9.8, 0);
-        if (trackConfig.id === "silverstone") {
-          pitRoof.rotation.x = -0.08;
-          pitRoof.rotation.z = 0.14;
-        }
-
-        const pitGlass = new THREE.Mesh(
-          new THREE.BoxGeometry(0.4, 3.8, 92),
-          new THREE.MeshStandardMaterial({
-            color: 0x38bdf8,
-            emissive: 0x00f0ff,
-            emissiveIntensity: 0.85,
-          }),
-        );
-        pitGlass.position.set(-5.05, 6.2, 0);
-
-        pitGroup.add(pitBuilding, pitRoof, pitGlass);
-        trackGroup.add(pitGroup);
+      const pitRoof = new THREE.Mesh(
+        new THREE.BoxGeometry(14, 1.2, 102),
+        new THREE.MeshStandardMaterial({
+          color: 0x0f172a,
+          emissive: new THREE.Color(trackConfig.themeColor),
+          emissiveIntensity: 0.85,
+        }),
+      );
+      pitRoof.position.set(-1.5, 9.8, 0);
+      if (trackConfig.id === "silverstone") {
+        pitRoof.rotation.x = -0.08;
+        pitRoof.rotation.z = 0.14;
       }
+
+      const pitGlass = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 3.8, 92),
+        new THREE.MeshStandardMaterial({
+          color: 0x38bdf8,
+          emissive: 0x00f0ff,
+          emissiveIntensity: 0.85,
+        }),
+      );
+      pitGlass.position.set(-5.05, 6.2, 0);
+
+      pitGroup.add(pitBuilding, pitRoof, pitGlass);
+      trackGroup.add(pitGroup);
     }
 
     return lightPods3D;
@@ -801,6 +849,23 @@ const TrackBuilder = {
     }
   },
 
+  // ── PRNG deterministico (mulberry32) per scenery identico su ogni client LAN ─
+  createSeededRandom(seedString) {
+    let h = 1779033703 ^ seedString.length;
+    for (let i = 0; i < seedString.length; i++) {
+      h = Math.imul(h ^ seedString.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    let a = h >>> 0;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  },
+
   populateInstancedSceneryAndLandmarks(
     trackGroup,
     samples,
@@ -809,6 +874,8 @@ const TrackBuilder = {
   ) {
     const dummy = new THREE.Object3D();
     const animatedObjects = {};
+    // Seed dal track id: stessa pista → stessa decorazione su ogni client
+    const rng = this.createSeededRandom(String(trackConfig.id || "track"));
 
     const kerbLocations = [];
     const tireLocations = [];
@@ -836,11 +903,8 @@ const TrackBuilder = {
       const countA = Math.ceil(kerbLocations.length / 2);
       const countB = Math.floor(kerbLocations.length / 2);
       const meshA = new THREE.InstancedMesh(kerbGeo, kerbMatA, countA);
-      const meshB = new THREE.InstancedMesh(
-        kerbGeo,
-        kerbMatB,
-        Math.max(1, countB),
-      );
+      const meshB =
+        countB > 0 ? new THREE.InstancedMesh(kerbGeo, kerbMatB, countB) : null;
 
       let ia = 0,
         ib = 0;
@@ -857,9 +921,10 @@ const TrackBuilder = {
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         if (idx % 2 === 0) meshA.setMatrixAt(ia++, dummy.matrix);
-        else meshB.setMatrixAt(ib++, dummy.matrix);
+        else if (meshB) meshB.setMatrixAt(ib++, dummy.matrix);
       });
-      trackGroup.add(meshA, meshB);
+      trackGroup.add(meshA);
+      if (meshB) trackGroup.add(meshB);
     }
 
     // Barriere esterne Curve con bagliore Neon Arcade (con controllo anticollisione)
@@ -900,9 +965,7 @@ const TrackBuilder = {
       trackGroup.add(tireInst);
     }
 
-    if (trackConfig.id === "monaco") {
-      this.buildMonacoTunnelAndYachts(trackGroup, samples, halfWidth);
-    } else if (trackConfig.id === "suzuka") {
+    if (trackConfig.id === "suzuka") {
       animatedObjects.ferrisWheel =
         this.buildSuzukaFerrisWheelAndBridge(trackGroup);
     } else if (trackConfig.id === "monza") {
@@ -914,14 +977,14 @@ const TrackBuilder = {
       for (let i = 0; i < samples.length; i += 20) {
         const s = samples[i];
         for (let side of [-1, 1]) {
-          const dist = halfWidth + 18 + Math.random() * 26;
+          const dist = halfWidth + 18 + rng() * 26;
           const pos = s.point.clone().addScaledVector(s.right, side * dist);
           if (this.isTooCloseToTrack(pos, samples, halfWidth + 18, i, 30)) continue;
           buildingTransforms.push({
             x: pos.x,
             z: pos.z,
-            h: 28 + Math.random() * 56,
-            w: 12 + Math.random() * 10,
+            h: 28 + rng() * 56,
+            w: 12 + rng() * 10,
           });
         }
       }
@@ -963,14 +1026,14 @@ const TrackBuilder = {
       for (let i = 0; i < samples.length; i += 18) {
         const s = samples[i];
         for (let side of [-1, 1]) {
-          const dist = halfWidth + 18 + Math.random() * 44;
+          const dist = halfWidth + 18 + rng() * 44;
           const pos = s.point.clone().addScaledVector(s.right, side * dist);
           if (this.isTooCloseToTrack(pos, samples, halfWidth + 14, i, 8)) continue;
           treePositions.push({
             x: pos.x,
             y: groundY,
             z: pos.z,
-            scale: 0.85 + Math.random() * 0.55,
+            scale: 0.85 + rng() * 0.55,
           });
         }
 
@@ -1049,87 +1112,6 @@ const TrackBuilder = {
     }
 
     return animatedObjects;
-  },
-
-  buildMonacoTunnelAndYachts(trackGroup, samples, halfWidth) {
-    const N = samples.length;
-    // Il Tunnel (Curva 9) sulla nuova mappa di Monaco copre dal 47% al 60% del giro
-    const startIdx = Math.floor(0.47 * N);
-    const endIdx = Math.floor(0.6 * N);
-
-    const roofMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.5,
-    });
-    const lightStripMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
-
-    for (let i = startIdx; i < endIdx; i += 6) {
-      const s = samples[i];
-      const yaw = Math.atan2(s.tangent.x, s.tangent.z);
-
-      const segGroup = new THREE.Group();
-      segGroup.position.copy(s.point);
-      segGroup.rotation.y = yaw;
-
-      const roof = new THREE.Mesh(
-        new THREE.BoxGeometry((halfWidth + 3.6) * 2, 1.4, 9.5),
-        roofMat,
-      );
-      roof.position.set(0, 7.4, 0);
-
-      const wallL = new THREE.Mesh(
-        new THREE.BoxGeometry(1.2, 7.5, 9.5),
-        roofMat,
-      );
-      wallL.position.set(-halfWidth - 3.0, 3.75, 0);
-
-      const pillarR = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 7.5, 2.2),
-        roofMat,
-      );
-      pillarR.position.set(halfWidth + 3.0, 3.75, 0);
-
-      const ceilingLight = new THREE.Mesh(
-        new THREE.BoxGeometry(2.8, 0.3, 6.4),
-        lightStripMat,
-      );
-      ceilingLight.position.set(0, 6.6, 0);
-
-      segGroup.add(roof, wallL, pillarR, ceilingLight);
-      trackGroup.add(segGroup);
-    }
-
-    // Yacht ancorati nello specchio d'acqua di Port Hercule (tra Nouvelle Chicane, Tabac e Piscine)
-    const yachtCoords = [
-      { x: -155, z: 45, yaw: 0.6 },
-      { x: -205, z: 32, yaw: 0.4 },
-      { x: -245, z: 85, yaw: -0.3 },
-      { x: -185, z: 110, yaw: 0.2 },
-    ];
-    const hullMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      roughness: 0.15,
-    });
-    const deckMat = new THREE.MeshStandardMaterial({
-      color: 0x00f0ff,
-      emissive: 0xff2a85,
-      emissiveIntensity: 0.65,
-    });
-
-    yachtCoords.forEach((yc) => {
-      const yacht = new THREE.Group();
-      const hull = new THREE.Mesh(new THREE.BoxGeometry(8.5, 3.6, 28), hullMat);
-      hull.position.y = 1.6;
-      const cabin = new THREE.Mesh(
-        new THREE.BoxGeometry(6.8, 2.8, 16),
-        deckMat,
-      );
-      cabin.position.set(0, 4.4, -2);
-      yacht.add(hull, cabin);
-      yacht.position.set(yc.x, 0, yc.z);
-      yacht.rotation.y = yc.yaw;
-      trackGroup.add(yacht);
-    });
   },
 
   buildSuzukaFerrisWheelAndBridge(trackGroup) {

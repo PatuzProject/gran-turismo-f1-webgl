@@ -11,6 +11,15 @@
     box-sizing: border-box;
 }
 
+/* Allow text selection inside form fields and explicitly selectable content */
+input,
+textarea,
+[contenteditable],
+.selectable {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
 body, html {
     margin: 0;
     padding: 0;
@@ -50,6 +59,25 @@ body, html {
     backdrop-filter: blur(14px);
     border: 1px solid rgba(229, 184, 66, 0.35);
     box-shadow: 0 10px 30px rgba(229, 184, 66, 0.12);
+}
+
+/*
+ * MODALITÀ GARA (PERFORMANCE)
+ * Mentre `RaceEngine.isActive` è true aggiungiamo la classe `.racing` su <html>.
+ * I backdrop-filter sfocano la scena WebGL in movimento a ogni frame: con un
+ * background già opaco all'84% la differenza visiva è trascurabile, mentre il
+ * costo GPU del compositing è elevato (soprattutto in multiplayer, dove si
+ * aggiunge il pannello di diagnostica). Disattivarli in gara recupera molti FPS
+ * senza toccare la resa dei modelli, delle luci o del post-processing.
+ */
+html.racing .glass-panel,
+html.racing .glass-panel-gold,
+html.racing #net-diag-hud,
+html.racing .backdrop-blur-sm,
+html.racing .backdrop-blur-md,
+html.racing .backdrop-blur-lg {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }
 
 .gt-tab {
@@ -108,8 +136,59 @@ body, html {
     pointer-events: none;
 }
 
-.pointer-auto {
+.pointer-auto,
+#menu-header,
+#menu-main,
+#screen-tracks,
+#screen-championship,
+#screen-multiplayer,
+#champ-hub-content,
+.glass-panel,
+.gt-tab,
+.gt-btn,
+button,
+select,
+input,
+kbd {
     pointer-events: auto;
+}
+
+/* In the showroom scene, permit 3D turntable dragging through central open space */
+#screen-showroom {
+    pointer-events: none;
+}
+#screen-showroom > div,
+#screen-showroom .glass-panel,
+#screen-showroom button {
+    pointer-events: auto;
+}
+
+/* Screen adaptation and responsive UI rules */
+@media (max-height: 780px) {
+    #menu-header {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+    }
+    #menu-main {
+        padding: 0.75rem !important;
+    }
+    .hud-compact-hide {
+        display: none !important;
+    }
+}
+
+@media (max-width: 640px) {
+    .gt-tab {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        font-size: 0.7rem !important;
+    }
+    .glass-panel {
+        backdrop-filter: blur(8px) !important;
+    }
+    #hud-pos-card, #hud-lap-card {
+        padding: 0.4rem 0.6rem !important;
+    }
 }
 
 ::-webkit-scrollbar {

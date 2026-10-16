@@ -174,9 +174,60 @@ const GraphicsEngine = {
     this.composer.addPass(this.speedPass);
   },
 
+  disposePostProcessing() {
+    // In Three.js r128 composer.dispose() libera solo i render target del
+    // composer: gli FBO/materiali/programmi dei singoli pass restano allocati.
+    // Vanno quindi liberati esplicitamente prima di scartare il composer.
+    if (this.renderPass && this.renderPass.dispose) {
+      this.renderPass.dispose();
+    }
+    if (this.bloomPass && this.bloomPass.dispose) {
+      this.bloomPass.dispose();
+    }
+    if (this.speedPass) {
+      if (this.speedPass.material && this.speedPass.material.dispose) {
+        this.speedPass.material.dispose();
+      }
+      if (this.speedPass.fsQuad && this.speedPass.fsQuad.dispose) {
+        this.speedPass.fsQuad.dispose();
+      }
+    }
+    if (this.composer && this.composer.dispose) {
+      this.composer.dispose();
+    }
+    this.composer = null;
+    this.renderPass = null;
+    this.bloomPass = null;
+    this.speedPass = null;
+  },
+
 
   buildAtmosphericSkyAndIBL(scene, trackConfig) {
-    if (this.skyMesh) scene.remove(this.skyMesh);
+    // Libera le risorse della volta precedente prima di ricostruirla: la sola
+    // scene.remove() lasciava SphereGeometry, MeshBasicMaterial e la
+    // CanvasTexture del cielo allocati ad ogni cambio pista.
+    if (this.skyMesh) {
+      scene.remove(this.skyMesh);
+      if (this.skyMesh.geometry && this.skyMesh.geometry.dispose) {
+        this.skyMesh.geometry.dispose();
+      }
+      if (this.skyMesh.material) {
+        if (this.skyMesh.material.map && this.skyMesh.material.map.dispose) {
+          this.skyMesh.material.map.dispose();
+        }
+        if (this.skyMesh.material.dispose) {
+          this.skyMesh.material.dispose();
+        }
+      }
+      this.skyMesh = null;
+      this.skyTexture = null;
+    }
+
+    // Anche il precedente env map PMREM è una risorsa GPU da liberare.
+    if (this.currentEnvMap) {
+      this.currentEnvMap.dispose();
+      this.currentEnvMap = null;
+    }
 
     const canvas = document.createElement("canvas");
     canvas.width = 512;
@@ -200,7 +251,6 @@ const GraphicsEngine = {
     this.skyTexture = texture;
 
     if (this.pmremGenerator) {
-      if (this.currentEnvMap) this.currentEnvMap.dispose();
       this.currentEnvMap = this.pmremGenerator.fromEquirectangular(texture).texture;
       scene.environment = this.currentEnvMap;
     }
@@ -221,7 +271,17 @@ const GraphicsEngine = {
   },
 
   initDriftSparkPool(scene) {
-    if (this.sparkGroup) scene.remove(this.sparkGroup);
+    if (this.sparkGroup) {
+      scene.remove(this.sparkGroup);
+      // Ogni scintilla ha il proprio MeshBasicMaterial (il colore varia a
+      // runtime) e condivide una BoxGeometry: entrambi vanno liberati prima
+      // di ricostruire il pool, altrimenti restano allocati ad ogni pista.
+      this.sparkGroup.traverse((child) => {
+        if (child.geometry && child.geometry.dispose) child.geometry.dispose();
+        if (child.material && child.material.dispose) child.material.dispose();
+      });
+      this.sparkGroup = null;
+    }
     this.sparkGroup = new THREE.Group();
     scene.add(this.sparkGroup);
     this.sparkPool = [];
@@ -441,7 +501,10 @@ const GraphicsEngine = {
     this.sunLight = sun;
 
     const hemi = new THREE.HemisphereLight(0x60a5fa, 0x1e293b, 0.5);
-    scene.add(sun, hemi);
+    // sun.target deve far parte della scena, altrimenti la sua matrixWorld
+    // resta all'origine e la luce illumina/ombreggia sempre il world origin
+    // ignorando update() che sposta il target sulla vettura.
+    scene.add(sun, sun.target, hemi);
     return { sun, hemi };
   },
 
@@ -455,7 +518,7 @@ const GraphicsEngine = {
 
   update(dt, playerCar, currentSpeedKmh) {
     const isBoost = Boolean(
-      playerCar && (playerCar.drsActive || playerCar.turboWasActive)
+      playerCar && (playerCar.drsActive || playerCar.turboWasActive || playerCar.isSlingshotBoosting || (playerCar.draftIntensity && playerCar.draftIntensity > 0.45))
     );
 
     if (this.speedPass) {
@@ -470,8 +533,8 @@ const GraphicsEngine = {
 
     if (playerCar && typeof RaceEngine !== "undefined" && RaceEngine.isActive) {
       const isDrifting = Math.abs(playerCar.driftAngle) > 0.14 && currentSpeedKmh > 55;
-      if (isDrifting || playerCar.turboWasActive) {
-        this.spawnDriftSparks(playerCar, Boolean(playerCar.turboWasActive));
+      if (isDrifting || playerCar.turboWasActive || playerCar.isSlingshotBoosting) {
+        this.spawnDriftSparks(playerCar, Boolean(playerCar.turboWasActive || playerCar.isSlingshotBoosting));
       }
     }
     this.updateDriftSparks(dt);

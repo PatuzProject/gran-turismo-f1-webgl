@@ -43,13 +43,10 @@ const GameApp = {
       antialias: true,
       powerPreference: "high-performance",
     });
+    // Nota: tone mapping, esposizione, outputEncoding, shadow map e pixel
+    // ratio sono configurati da GraphicsEngine.init (unico proprietario),
+    // che viene invocato subito dopo e sovrascriveva questi valori duplicati.
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
-    this.renderer.outputEncoding = THREE.sRGBEncoding;
     container.appendChild(this.renderer.domElement);
 
     this.clock = new THREE.Clock();
@@ -99,20 +96,132 @@ const GameApp = {
     this.animate();
   },
 
-  clearScene() {
-    while (this.scene.children.length > 0) {
-      this.scene.remove(this.scene.children[0]);
+  clearScene(preserve) {
+    // Libera la memoria GPU di tutta la scena prima di rimuoverla: la sola
+    // scene.remove() lasciava geometrie, materiali e texture allocati nel
+    // renderer, causando un leak ad ogni transizione showroom ↔ gara.
+    const scene = this.scene;
+    const keep = typeof preserve === "function" ? preserve : () => false;
+    const mapSlots = [
+      "map",
+      "normalMap",
+      "roughnessMap",
+      "metalnessMap",
+      "emissiveMap",
+      "envMap",
+      "alphaMap",
+      "aoMap",
+      "lightMap",
+      "bumpMap",
+      "displacementMap",
+    ];
+
+    // Risorse globali condivise e riutilizzate tra scene diverse: non vanno
+    // mai liberate qui, perché i cache che le possiedono (ProceduralAssets,
+    // loadedModelsCache, proceduralTextures) non le ricreano. Sono invece
+    // liberate dai rispettivi proprietari quando vengono sostituite
+    // (es. buildAtmosphericSkyAndIBL / initDriftSparkPool).
+    const persistent = new Set();
+    const collectSlots = (material) => {
+      if (!material) return;
+      mapSlots.forEach((slot) => {
+        if (material[slot]) persistent.add(material[slot]);
+      });
+    };
+    const registerResources = (root) => {
+      if (!root || typeof root.traverse !== "function") return;
+      root.traverse((node) => {
+        if (node.geometry) persistent.add(node.geometry);
+        if (Array.isArray(node.material)) {
+          node.material.forEach((material) => {
+            persistent.add(material);
+            collectSlots(material);
+          });
+        } else if (node.material) {
+          persistent.add(node.material);
+          collectSlots(node.material);
+        }
+      });
+    };
+
+    if (typeof GraphicsEngine !== "undefined") {
+      registerResources(GraphicsEngine.skyMesh);
+      registerResources(GraphicsEngine.sparkGroup);
+      Object.keys(GraphicsEngine.loadedModelsCache || {}).forEach((key) =>
+        registerResources(GraphicsEngine.loadedModelsCache[key]),
+      );
+      Object.keys(GraphicsEngine.proceduralTextures || {}).forEach((key) => {
+        if (GraphicsEngine.proceduralTextures[key]) {
+          persistent.add(GraphicsEngine.proceduralTextures[key]);
+        }
+      });
+      if (GraphicsEngine.currentEnvMap) {
+        persistent.add(GraphicsEngine.currentEnvMap);
+      }
     }
+    if (typeof ProceduralAssets !== "undefined") {
+      Object.keys(ProceduralAssets.geoCache || {}).forEach((key) =>
+        persistent.add(ProceduralAssets.geoCache[key]),
+      );
+      if (ProceduralAssets.sharedMaterials) {
+        Object.keys(ProceduralAssets.sharedMaterials).forEach((key) => {
+          const material = ProceduralAssets.sharedMaterials[key];
+          persistent.add(material);
+          collectSlots(material);
+        });
+      }
+      if (ProceduralAssets.contactShadowTexture) {
+        persistent.add(ProceduralAssets.contactShadowTexture);
+      }
+    }
+    // scene.environment è l'IBL PMREM: viene ricreato da
+    // buildAtmosphericSkyAndIBL, quindi non lo liberiamo da qui.
+    if (scene.environment) persistent.add(scene.environment);
+
+    const isShared = (resource) =>
+      Boolean(resource) && (persistent.has(resource) || keep(resource));
+
+    const disposeMaterial = (material) => {
+      if (!material) return;
+      mapSlots.forEach((slot) => {
+        const texture = material[slot];
+        if (texture && !isShared(texture) && texture.dispose) {
+          texture.dispose();
+        }
+      });
+      if (!isShared(material) && material.dispose) material.dispose();
+    };
+
+    const disposeObject = (object) => {
+      if (!object) return;
+      // Ricorsione sui figli (inclusi i THREE.Group) prima del nodo stesso.
+      while (object.children && object.children.length > 0) {
+        disposeObject(object.children[0]);
+        object.remove(object.children[0]);
+      }
+      if (object.geometry && !isShared(object.geometry) && object.geometry.dispose) {
+        object.geometry.dispose();
+      }
+      if (Array.isArray(object.material)) {
+        object.material.forEach(disposeMaterial);
+      } else {
+        disposeMaterial(object.material);
+      }
+    };
+
+    while (scene.children.length > 0) {
+      const child = scene.children[0];
+      disposeObject(child);
+      scene.remove(child);
+    }
+
     if (typeof GraphicsEngine !== "undefined") {
       GraphicsEngine.clearBrakeDiscs();
       // Reinizializza il post-processing dopo aver svuotato la scena,
       // altrimenti il EffectComposer mantiene riferimenti stale e lo schermo
       // diventa nero durante la gara.
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-      if (GraphicsEngine.composer) {
-        GraphicsEngine.composer.dispose ? GraphicsEngine.composer.dispose() : null;
-        GraphicsEngine.composer = null;
-      }
+      GraphicsEngine.disposePostProcessing();
       GraphicsEngine.initPostProcessing(this.scene, this.camera, pixelRatio);
       GraphicsEngine.setupSunLight(this.scene, new THREE.Vector3(120, 220, 90));
     } else {
@@ -120,7 +229,7 @@ const GameApp = {
       const sun = new THREE.DirectionalLight(0xfff5e6, 1.25);
       sun.position.set(120, 220, 90);
       sun.castShadow = true;
-      this.scene.add(hemiLight, sun);
+      this.scene.add(hemiLight, sun, sun.target);
     }
   },
 
@@ -181,13 +290,7 @@ const GameApp = {
 
     this.spawnShowroomCar(this.selectedCarId);
     if (typeof GraphicsEngine !== "undefined") {
-      GraphicsEngine.configureAtmosphericFog(
-        this.scene,
-        0xb9e8f2,
-        0.00008,
-        0.5,
-      );
-      GraphicsEngine.applyHeightFog(this.scene);
+      GraphicsEngine.configureAtmosphericFog(this.scene, 0xb9e8f2, 0.00008);
     }
 
     this.camera.fov = 45;
@@ -263,6 +366,13 @@ const GameApp = {
   animate() {
     requestAnimationFrame(() => this.animate());
     const dt = Math.min(0.04, this.clock.getDelta());
+
+    // Modalità gara: disattiva i backdrop-filter dei pannelli HUD (guadagno FPS
+    // a resa grafica praticamente invariata). Cambia classe solo alla transizione.
+    if (this._isRacingClass !== RaceEngine.isActive) {
+      this._isRacingClass = RaceEngine.isActive;
+      document.documentElement.classList.toggle("racing", RaceEngine.isActive);
+    }
 
     if (RaceEngine.isActive) {
       RaceEngine.update(dt);

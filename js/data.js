@@ -212,7 +212,7 @@ const CAR_CATALOG = [
   },
 ];
 
-// 11 Authentic F1-Style CPU Personalities
+// 11 Authentic F1-Style CPU Personalities with Weighted Dynamic Archetypes
 const AI_DRIVER_ROSTER = [
   {
     code: "VER",
@@ -222,6 +222,7 @@ const AI_DRIVER_ROSTER = [
     skill: 1.01,
     brakeMargin: 1.02,
     errorRate: 0.08,
+    archetypeWeights: { attacker: 0.65, tactician: 0.25, prudent: 0.10 },
   },
   {
     code: "LEC",
@@ -231,6 +232,7 @@ const AI_DRIVER_ROSTER = [
     skill: 1.0,
     brakeMargin: 1.03,
     errorRate: 0.12,
+    archetypeWeights: { attacker: 0.60, tactician: 0.30, prudent: 0.10 },
   },
   {
     code: "HAM",
@@ -240,6 +242,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.99,
     brakeMargin: 1.0,
     errorRate: 0.07,
+    archetypeWeights: { attacker: 0.30, tactician: 0.55, prudent: 0.15 },
   },
   {
     code: "NOR",
@@ -249,6 +252,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.99,
     brakeMargin: 1.01,
     errorRate: 0.11,
+    archetypeWeights: { attacker: 0.45, tactician: 0.40, prudent: 0.15 },
   },
   {
     code: "ALO",
@@ -258,6 +262,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.98,
     brakeMargin: 0.99,
     errorRate: 0.06,
+    archetypeWeights: { attacker: 0.25, tactician: 0.60, prudent: 0.15 },
   },
   {
     code: "SAI",
@@ -267,6 +272,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.97,
     brakeMargin: 1.0,
     errorRate: 0.1,
+    archetypeWeights: { attacker: 0.35, tactician: 0.45, prudent: 0.20 },
   },
   {
     code: "PIA",
@@ -276,6 +282,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.97,
     brakeMargin: 0.99,
     errorRate: 0.09,
+    archetypeWeights: { attacker: 0.40, tactician: 0.40, prudent: 0.20 },
   },
   {
     code: "RUS",
@@ -285,6 +292,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.96,
     brakeMargin: 1.02,
     errorRate: 0.14,
+    archetypeWeights: { attacker: 0.45, tactician: 0.35, prudent: 0.20 },
   },
   {
     code: "GAS",
@@ -294,6 +302,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.95,
     brakeMargin: 0.98,
     errorRate: 0.13,
+    archetypeWeights: { attacker: 0.25, tactician: 0.35, prudent: 0.40 },
   },
   {
     code: "TSU",
@@ -303,6 +312,7 @@ const AI_DRIVER_ROSTER = [
     skill: 0.94,
     brakeMargin: 1.03,
     errorRate: 0.16,
+    archetypeWeights: { attacker: 0.35, tactician: 0.25, prudent: 0.40 },
   },
   {
     code: "ALB",
@@ -312,12 +322,16 @@ const AI_DRIVER_ROSTER = [
     skill: 0.93,
     brakeMargin: 0.97,
     errorRate: 0.11,
+    archetypeWeights: { attacker: 0.20, tactician: 0.30, prudent: 0.50 },
   },
 ];
 
 // Circuito Ufficiale F1 Monza con Zone DRS FIA & Telemetria Curve
 // =========================================================================
 // CATALOGO GRAND PRIX F1 (HIGH-PRECISION RACETRACK-DATABASE + MONZA)
+// =========================================================================
+// =========================================================================
+// CATALOGO GRAND PRIX F1 (25 CIRCUITI UFFICIALI FIA & RACETRACK-DATABASE)
 // =========================================================================
 // =========================================================================
 // CATALOGO GRAND PRIX F1 (25 CIRCUITI UFFICIALI FIA & RACETRACK-DATABASE)
@@ -346,6 +360,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2246955,
     sceneryType: "airfield",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.65,
     drsZones: [
@@ -743,6 +758,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1722154,
     sceneryType: "forest",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.85,
     drsZones: [
@@ -1057,6 +1073,7 @@ const TRACK_CATALOG = [
     curbColorB: "#16a34a",
     groundColor: 2375200,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.11,
     drsZones: [
@@ -1395,6 +1412,7 @@ const TRACK_CATALOG = [
     curbColorB: "#facc15",
     groundColor: 2574891,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.1,
     drsZones: [
@@ -1753,6 +1771,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1456160,
     sceneryType: "forest",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.43,
     drsZones: [
@@ -2080,6 +2099,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2246955,
     sceneryType: "airfield",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.55,
     drsZones: [
@@ -2305,6 +2325,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1722154,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.04,
     drsZones: [
@@ -2669,6 +2690,7 @@ const TRACK_CATALOG = [
     curbColorB: "#dc2626",
     groundColor: 2246955,
     sceneryType: "city",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.2,
     drsZones: [
@@ -2972,6 +2994,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1456160,
     sceneryType: "park",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.87,
     drsZones: [
@@ -3268,6 +3291,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1722154,
     sceneryType: "forest",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.05,
     drsZones: [
@@ -3577,6 +3601,7 @@ const TRACK_CATALOG = [
     curbColorB: "#facc15",
     groundColor: 1976635,
     sceneryType: "city",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.59,
     drsZones: [
@@ -3769,6 +3794,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1392160,
     sceneryType: "forest",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.81,
     drsZones: [
@@ -4133,6 +4159,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2049829,
     sceneryType: "park",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.07,
     drsZones: [
@@ -4426,6 +4453,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2564118,
     sceneryType: "airfield",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.11,
     drsZones: [
@@ -4775,6 +4803,7 @@ const TRACK_CATALOG = [
     curbColorB: "#16a34a",
     groundColor: 1456160,
     sceneryType: "park",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.29,
     drsZones: [
@@ -5128,6 +5157,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1327136,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.08,
     drsZones: [
@@ -5517,6 +5547,7 @@ const TRACK_CATALOG = [
     curbColorB: "#facc15",
     groundColor: 2246955,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.06,
     drsZones: [
@@ -5925,6 +5956,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2246955,
     sceneryType: "airfield",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.04,
     drsZones: [
@@ -6353,6 +6385,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2042167,
     sceneryType: "city",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.05,
     drsZones: [
@@ -6766,6 +6799,7 @@ const TRACK_CATALOG = [
     curbColorB: "#eab308",
     groundColor: 1259554,
     sceneryType: "forest",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.03,
     drsZones: [
@@ -7207,6 +7241,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1589796,
     sceneryType: "forest",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.84,
     drsZones: [
@@ -7507,6 +7542,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1454112,
     sceneryType: "park",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.09,
     drsZones: [
@@ -7944,6 +7980,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 1121326,
     sceneryType: "city",
+    poleSide: "right",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.04,
     drsZones: [
@@ -8311,6 +8348,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 2246955,
     sceneryType: "park",
+    poleSide: "left",
     sectorSplits: [0.3, 0.68],
     speedTrapU: 0.06,
     drsZones: [
@@ -8675,6 +8713,7 @@ const TRACK_CATALOG = [
     curbColorB: "#f8fafc",
     groundColor: 0x1a472a,
     sceneryType: "park",
+    poleSide: "right",
     sectorSplits: [0.27, 0.62],
     speedTrapU: 0.1,
     drsZones: [

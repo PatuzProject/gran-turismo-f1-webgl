@@ -7,6 +7,11 @@ const RaceEngine = {
   isActive: false,
   isPaused: false,
   isFinished: false,
+  chequeredFlagActive: false,
+  chequeredFlagTimer: 0,
+  officialFinishOrder: [],
+  postRaceCooldownTimer: 0,
+  raceSessionClosing: false,
   mode: "race",
   gridSize: 10, // 8, 10, or 12 total cars on track
   totalLaps: 3, // 2 or 3 laps
@@ -72,10 +77,6 @@ const RaceEngine = {
 
   getDifficultyConfig() {
     return this.DIFFICULTY_LEVELS[this.difficulty] || this.DIFFICULTY_LEVELS.medium;
-  },
-
-  getDifficultyMultiplier() {
-    return this.getDifficultyConfig().multiplier || 1.0;
   },
   trackConfig: null,
   trackData: null,
@@ -147,15 +148,16 @@ const RaceEngine = {
         this.keys.shiftDown = true;
         this.manualGearShift(-1);
       }
-      if (code === "KeyM") {
+      // I toggle non devono riattivarsi sull'auto-repeat del sistema operativo
+      if (code === "KeyM" && !e.repeat) {
         this.toggleTransmissionMode();
       }
-      if (code === "KeyC") this.cycleCamera();
-      if (code === "KeyR" || code === "Backspace") {
+      if (code === "KeyC" && !e.repeat) this.cycleCamera();
+      if ((code === "KeyR" || code === "Backspace") && !e.repeat) {
         this.resetPlayerToTrack();
         e.preventDefault();
       }
-      if (code === "Escape") this.togglePause();
+      if (code === "Escape" && !e.repeat) this.togglePause();
     });
 
     window.addEventListener("keyup", (e) => {
@@ -201,13 +203,47 @@ const RaceEngine = {
     const bar = document.createElement("div");
     bar.id = "hud-f1-corner-bar";
     bar.className =
-      "fixed top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none hidden md:flex items-center gap-3 glass-panel px-4 py-1.5 rounded-full border border-white/15";
+      "fixed top-2.5 left-1/2 -translate-x-1/2 z-20 pointer-events-none hidden lg:flex items-center gap-2 glass-panel px-3 py-1 rounded-full border border-white/15 shadow-xl backdrop-blur-md";
     bar.innerHTML = `
-            <span id="hud-sector-badge" class="px-2 py-0.5 rounded-full text-[10px] font-racing font-bold bg-rose-500/30 text-rose-300 border border-rose-400/40">SETTORE 1</span>
-            <span id="hud-corner-name" class="font-racing text-xs font-bold text-white tracking-wider">RETTIFILO PRINCIPALE</span>
-            <span id="hud-drs-badge" class="px-2.5 py-0.5 rounded-full text-[10px] font-racing font-black bg-slate-800 text-slate-500 border border-white/10">DRS</span>
+            <span id="hud-sector-badge" class="px-2 py-0.5 rounded-full text-[9px] font-racing font-bold bg-rose-500/30 text-rose-300 border border-rose-400/40">SETTORE 1</span>
+            <span id="hud-corner-name" class="font-racing text-[11px] font-bold text-white tracking-wider max-w-[210px] truncate">RETTIFILO PRINCIPALE</span>
+            <span id="hud-drs-badge" class="px-2 py-0.5 rounded-full text-[9px] font-racing font-black bg-slate-800 text-slate-500 border border-white/10">DRS</span>
+            <span id="hud-draft-badge" class="hidden px-2 py-0.5 rounded-full text-[9px] font-racing font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 uppercase transition-all">SCIA</span>
         `;
     hud.appendChild(bar);
+  },
+
+  // ── Helper griglia di partenza metrica unificata FIA ───────────────────────
+  getGridSlot(slot) {
+    const poleSide = (this.trackConfig && this.trackConfig.poleSide) || "left";
+    if (typeof TrackBuilder !== "undefined" && TrackBuilder.getGridSlotTransform && this.trackData) {
+      return TrackBuilder.getGridSlotTransform(
+        this.trackData.samples,
+        this.trackData.totalLength,
+        this.trackData.halfWidth * 2,
+        slot,
+        poleSide,
+      );
+    }
+    const samples = (this.trackData && this.trackData.samples) || [];
+    const N = samples.length || 1500;
+    const len = (this.trackData && this.trackData.totalLength) || (N * 3.5);
+    const ds = len / N;
+    const slotDist = 10.0 + slot * 8.0;
+    const stepBack = Math.max(1, Math.round(slotDist / ds));
+    const sampleIndex = (N - stepBack + N) % N;
+    const poleSign = poleSide === "right" ? 1 : -1;
+    const colSign = (slot % 2 === 0) ? poleSign : -poleSign;
+    const lateralOffset = colSign * 2.4;
+    const sample = samples[sampleIndex] || { point: new THREE.Vector3(), right: new THREE.Vector3(1, 0, 0), tangent: new THREE.Vector3(0, 0, 1), u: 0 };
+    return {
+      sampleIndex,
+      lateralOffset,
+      point: sample.point.clone().addScaledVector(sample.right, lateralOffset),
+      heading: Math.atan2(sample.tangent.x, sample.tangent.z),
+      u: sample.u,
+      sample,
+    };
   },
 
   startSession(trackId, mode) {
@@ -223,37 +259,34 @@ const RaceEngine = {
 
     this.ensureTelemetryBannerExists();
     this.mode = mode;
-    const allTracks = typeof TILE_TRACK_CATALOG !== "undefined"
-      ? [...TRACK_CATALOG, ...TILE_TRACK_CATALOG]
-      : TRACK_CATALOG;
     this.trackConfig =
-      allTracks.find((t) => t.id === trackId) || allTracks[0];
+      TRACK_CATALOG.find((t) => t.id === trackId) || TRACK_CATALOG[0];
     const playerCarConfig =
       CAR_CATALOG.find((c) => c.id === equippedId) || CAR_CATALOG[0];
 
     GameApp.clearScene();
-    if (this.trackConfig.isTileTrack && typeof TileTrackBuilder !== "undefined") {
-      this.trackData = TileTrackBuilder.buildTileEnvironment(
-        GameApp.scene,
-        this.trackConfig,
-        playerCarConfig.physics,
-      );
-    } else {
-      this.trackData = TrackBuilder.buildTrackEnvironment(
-        GameApp.scene,
-        this.trackConfig,
-        playerCarConfig.physics,
-      );
-    }
+    this.trackData = TrackBuilder.buildTrackEnvironment(
+      GameApp.scene,
+      this.trackConfig,
+      playerCarConfig.physics,
+    );
 
     this.isActive = true;
     this.isPaused = false;
     this.isFinished = false;
+    this.chequeredFlagActive = false;
+    this.chequeredFlagTimer = 0;
+    this.officialFinishOrder = [];
+    this.postRaceCooldownTimer = 0;
+    this.raceSessionClosing = false;
     this.raceElapsedSeconds = 0;
     this.raceStartEpoch = 0;
     this.fastestLapTime = Infinity;
     this.fastestLapRacer = null;
     this.frameCounter = 0;
+
+    const finishBanner = document.getElementById("hud-finish-banner");
+    if (finishBanner) finishBanner.classList.add("hidden");
     this.keys = {
       up: false,
       down: false,
@@ -287,51 +320,91 @@ const RaceEngine = {
 
     const totalSamples = this.trackData.samples.length;
 
-    if (mode === "race") {
-      // Staggered 2-Column F1 Starting Grid matching the painted grid boxes
-      const aiCount = this.gridSize - 1;
-      for (let i = 0; i < aiCount; i++) {
-        const profile = AI_DRIVER_ROSTER[i % AI_DRIVER_ROSTER.length];
-        const gridRow = i;
-        const sampleIdx =
-          (totalSamples - 18 - gridRow * 12 + totalSamples) % totalSamples;
-        const colOffset = i % 2 === 0 ? -3.8 : 3.8;
+    if (mode === "race" || mode === "championship") {
+      if (mode === "championship" && typeof ChampionshipEngine !== "undefined" && ChampionshipEngine.state) {
+        const cState = ChampionshipEngine.state;
+        const slots = ChampionshipEngine.getGridSlots();
+        this.gridSize = cState.gridSize || 10;
+        this.totalLaps = cState.lapsPerRace || 3;
 
-        const aiRacer = this.createRacerEntity({
-          id: i + 1,
-          carConfig: playerCarConfig,
-          driverCode: profile.code,
-          driverName: profile.name,
-          isPlayer: false,
-          sampleIndex: sampleIdx,
-          lateralOffset: colOffset,
-          customPaint: profile.paint,
-          aiProfile: profile,
+        // Itera sui piloti registrati per posizionarli secondo le regole del campionato
+        cState.drivers.forEach((driver) => {
+          const slot = (slots[driver.id] !== undefined) ? slots[driver.id] : (driver.isPlayer ? 4 : driver.id);
+          const slotTrans = this.getGridSlot(slot);
+
+          if (driver.isPlayer) {
+            this.player = this.createRacerEntity({
+              id: 0,
+              carConfig: playerCarConfig,
+              driverCode: driver.code || "TU",
+              driverName: driver.name || "TU (Pilota GT)",
+              isPlayer: true,
+              sampleIndex: slotTrans.sampleIndex,
+              lateralOffset: slotTrans.lateralOffset,
+              customPaint: null,
+              aiProfile: null,
+            });
+            this.allRacers.push(this.player);
+          } else {
+            const aiRacer = this.createRacerEntity({
+              id: driver.id,
+              carConfig: playerCarConfig,
+              driverCode: driver.code,
+              driverName: driver.name,
+              isPlayer: false,
+              sampleIndex: slotTrans.sampleIndex,
+              lateralOffset: slotTrans.lateralOffset,
+              customPaint: driver.paint,
+              aiProfile: driver.aiProfile,
+            });
+            this.aiCars.push(aiRacer);
+            this.allRacers.push(aiRacer);
+          }
         });
-        this.aiCars.push(aiRacer);
-        this.allRacers.push(aiRacer);
+
+        this.countdownTimer = 5.4;
+        this.lastLightLit = 0;
+      } else {
+        // Griglia di partenza metrica FIA F1 unificata (Gara Singola)
+        const aiCount = this.gridSize - 1;
+        for (let i = 0; i < aiCount; i++) {
+          const profile = AI_DRIVER_ROSTER[i % AI_DRIVER_ROSTER.length];
+          const slotTrans = this.getGridSlot(i);
+
+          const aiRacer = this.createRacerEntity({
+            id: i + 1,
+            carConfig: playerCarConfig,
+            driverCode: profile.code,
+            driverName: profile.name,
+            isPlayer: false,
+            sampleIndex: slotTrans.sampleIndex,
+            lateralOffset: slotTrans.lateralOffset,
+            customPaint: profile.paint,
+            aiProfile: profile,
+          });
+          this.aiCars.push(aiRacer);
+          this.allRacers.push(aiRacer);
+        }
+
+        const playerRow = aiCount;
+        const playerSlotTrans = this.getGridSlot(playerRow);
+
+        this.player = this.createRacerEntity({
+          id: 0,
+          carConfig: playerCarConfig,
+          driverCode: "TU",
+          driverName: "TU (Pilota GT)",
+          isPlayer: true,
+          sampleIndex: playerSlotTrans.sampleIndex,
+          lateralOffset: playerSlotTrans.lateralOffset,
+          customPaint: null,
+          aiProfile: null,
+        });
+        this.allRacers.push(this.player);
+
+        this.countdownTimer = 5.4;
+        this.lastLightLit = 0;
       }
-
-      const playerRow = aiCount;
-      const playerSampleIdx =
-        (totalSamples - 18 - playerRow * 12 + totalSamples) % totalSamples;
-      const playerColOffset = playerRow % 2 === 0 ? -3.8 : 3.8;
-
-      this.player = this.createRacerEntity({
-        id: 0,
-        carConfig: playerCarConfig,
-        driverCode: "TU",
-        driverName: "TU (Pilota GT)",
-        isPlayer: true,
-        sampleIndex: playerSampleIdx,
-        lateralOffset: playerColOffset,
-        customPaint: null,
-        aiProfile: null,
-      });
-      this.allRacers.push(this.player);
-
-      this.countdownTimer = 5.4;
-      this.lastLightLit = 0;
     } else {
       this.player = this.createRacerEntity({
         id: 0,
@@ -348,17 +421,23 @@ const RaceEngine = {
       this.countdownTimer = 0;
     }
 
-    // Snap camera behind player
+    // Inizializza telecamera GT dinamica
+    this.camHeading = this.player.heading;
     const forward = new THREE.Vector3(
-      Math.sin(this.player.heading),
+      Math.sin(this.camHeading),
       0,
-      Math.cos(this.player.heading),
+      Math.cos(this.camHeading),
     );
     this.camPos
       .copy(this.player.position)
-      .addScaledVector(forward, -8.5)
-      .add(new THREE.Vector3(0, 3.5, 0));
-    this.camLook.copy(this.player.position).addScaledVector(forward, 6);
+      .addScaledVector(forward, -8.4)
+      .add(new THREE.Vector3(0, 2.75, 0));
+    this.camLook
+      .copy(this.player.position)
+      .addScaledVector(forward, 16.5)
+      .add(new THREE.Vector3(0, 1.45, 0));
+    GameApp.camera.position.copy(this.camPos);
+    GameApp.camera.lookAt(this.camLook);
 
     // Configure HUD visibility
     document.getElementById("menu-header").classList.add("hidden");
@@ -367,18 +446,20 @@ const RaceEngine = {
     document.getElementById("race-hud").classList.add("flex");
     document.getElementById("modal-pause").classList.add("hidden");
     document.getElementById("modal-results").classList.add("hidden");
+    this.hideChampionshipModals();
 
     document.getElementById("hud-track-name").textContent =
       this.trackConfig.name;
+    const isCompetitive = (mode === "race" || mode === "championship");
     document.getElementById("hud-pos-card").style.display =
-      mode === "race" ? "flex" : "none";
+      isCompetitive ? "flex" : "none";
     document.getElementById("hud-gap-row").style.display =
-      mode === "race" ? "flex" : "none";
+      isCompetitive ? "flex" : "none";
     document.getElementById("hud-leaderboard-panel").style.display =
-      mode === "race" ? "flex" : "none";
+      isCompetitive ? "flex" : "none";
     document.getElementById("hud-pos-total").textContent = `/ ${this.gridSize}`;
     document.getElementById("hud-lap-total").textContent =
-      mode === "race" ? `/ ${this.totalLaps}` : "/ ∞";
+      isCompetitive ? `/ ${this.totalLaps}` : "/ ∞";
 
     const savedRec = GameApp.profile.records[this.trackConfig.id];
     document.getElementById("hud-best-time").textContent =
@@ -389,19 +470,33 @@ const RaceEngine = {
     AudioEngine.setDrivingAudioActive(true);
   },
 
-  startLanSession(trackId, players, laps, countdownDuration, raceStartTime, serverTime) {
+  startLanSession(trackId, players, laps, countdownDuration, raceStartTime, serverTime, extraOptions) {
     this.ensureTelemetryBannerExists();
-    this.mode = "lan_race";
+    extraOptions = extraOptions || {};
+    const isChamp = (extraOptions.gameMode === "championship") ||
+                    (typeof NetworkEngine !== "undefined" && NetworkEngine.roomGameMode === "championship");
+    this.isLanChampionship = isChamp;
+    this.mode = isChamp ? "lan_championship" : "lan_race";
     this.totalLaps = laps || 3;
     this.raceStartTimeEpoch = raceStartTime || null;
     this.countdownDuration = countdownDuration || 4.5;
 
-    const allTracks = typeof TILE_TRACK_CATALOG !== "undefined"
-      ? [...TRACK_CATALOG, ...TILE_TRACK_CATALOG]
-      : TRACK_CATALOG;
-    this.trackConfig = allTracks.find((t) => t.id === trackId) || allTracks[0];
+    this.trackConfig = TRACK_CATALOG.find((t) => t.id === trackId) || TRACK_CATALOG[0];
 
     const myId = (typeof NetworkEngine !== "undefined" && (NetworkEngine.myPlayerId || NetworkEngine.myId)) || "local";
+
+    if (this.isLanChampionship && typeof ChampionshipEngine !== "undefined") {
+      // Propaga sempre la scelta Bot ON/OFF dell'Host alla generazione della griglia
+      const lanChampConfig = Object.assign(
+        { enableBots: extraOptions.enableBots !== false },
+        extraOptions.championship || {},
+      );
+      if (!ChampionshipEngine.state || !ChampionshipEngine.state.isLan || (extraOptions.championship && extraOptions.championship.currentStageIndex === 0)) {
+        ChampionshipEngine.initLanSeason(lanChampConfig, players, myId);
+      } else if (extraOptions.championship) {
+        ChampionshipEngine.syncLanSeason(extraOptions.championship);
+      }
+    }
     const myProfile = (players && players.find((p) => p.id === myId)) || {
       id: myId,
       name: (typeof NetworkEngine !== "undefined" && NetworkEngine.nickname) || "Pilota LAN",
@@ -409,33 +504,39 @@ const RaceEngine = {
       carId: (typeof NetworkEngine !== "undefined" && NetworkEngine.selectedCarId) || "hatchback",
       gridSlot: 0,
     };
+    if (typeof NetworkEngine !== "undefined" && NetworkEngine.selectedCarId) {
+      myProfile.carId = NetworkEngine.selectedCarId;
+    }
+    if (typeof NetworkEngine !== "undefined" && NetworkEngine.selectedColor) {
+      myProfile.color = NetworkEngine.selectedColor;
+    }
 
     const playerCarConfig =
       CAR_CATALOG.find((c) => c.id === myProfile.carId) || CAR_CATALOG[0];
 
     GameApp.clearScene();
-    if (this.trackConfig.isTileTrack && typeof TileTrackBuilder !== "undefined") {
-      this.trackData = TileTrackBuilder.buildTileEnvironment(
-        GameApp.scene,
-        this.trackConfig,
-        playerCarConfig.physics,
-      );
-    } else {
-      this.trackData = TrackBuilder.buildTrackEnvironment(
-        GameApp.scene,
-        this.trackConfig,
-        playerCarConfig.physics,
-      );
-    }
+    this.trackData = TrackBuilder.buildTrackEnvironment(
+      GameApp.scene,
+      this.trackConfig,
+      playerCarConfig.physics,
+    );
 
     this.isActive = true;
     this.isPaused = false;
     this.isFinished = false;
+    this.chequeredFlagActive = false;
+    this.chequeredFlagTimer = 0;
+    this.officialFinishOrder = [];
+    this.postRaceCooldownTimer = 0;
+    this.raceSessionClosing = false;
     this.raceElapsedSeconds = 0;
     this.raceStartEpoch = 0;
     this.fastestLapTime = Infinity;
     this.fastestLapRacer = null;
     this.frameCounter = 0;
+
+    const finishBanner = document.getElementById("hud-finish-banner");
+    if (finishBanner) finishBanner.classList.add("hidden");
     this.keys = {
       up: false,
       down: false,
@@ -481,14 +582,19 @@ const RaceEngine = {
         })
       : [myProfile];
 
-    let mySlot = playerList.findIndex((p) => p.id === myId);
+    const gridSlots = (extraOptions && extraOptions.gridSlots) ||
+      (this.isLanChampionship && typeof ChampionshipEngine !== "undefined" ? ChampionshipEngine.getGridSlots() : null);
+
+    let mySlot = (gridSlots && gridSlots[myId] !== undefined)
+      ? gridSlots[myId]
+      : playerList.findIndex((p) => p.id === myId);
     if (mySlot < 0) mySlot = 0;
 
-    const playerSampleIdx = (totalSamples - 18 - mySlot * 12 + totalSamples) % totalSamples;
-    const playerColOffset = mySlot % 2 === 0 ? -3.8 : 3.8;
-    const playerSample = this.trackData.samples[playerSampleIdx];
-    const initialPos = playerSample.point.clone().addScaledVector(playerSample.right, playerColOffset);
-    const initialHeading = Math.atan2(playerSample.tangent.x, playerSample.tangent.z);
+    const mySlotTrans = this.getGridSlot(mySlot);
+    const playerSampleIdx = mySlotTrans.sampleIndex;
+    const playerColOffset = mySlotTrans.lateralOffset;
+    const initialPos = mySlotTrans.point;
+    const initialHeading = mySlotTrans.heading;
 
     const myPaint = myProfile.color ? parseInt(myProfile.color.replace("#", "0x"), 16) : null;
     this.player = this.createRacerEntity({
@@ -515,14 +621,24 @@ const RaceEngine = {
       if (typeof NetworkEngine !== "undefined") {
         NetworkEngine.spawnPlayer(otherP);
       }
-      const rem = typeof remotePlayers !== "undefined" ? remotePlayers[otherP.id] : null;
+      let rem = typeof remotePlayers !== "undefined" ? remotePlayers[otherP.id] : null;
 
-      const slot = idx;
-      const sIdx = (totalSamples - 18 - slot * 12 + totalSamples) % totalSamples;
-      const colOff = slot % 2 === 0 ? -3.8 : 3.8;
-      const s = this.trackData.samples[sIdx];
-      const pos = s.point.clone().addScaledVector(s.right, colOff);
-      const heading = Math.atan2(s.tangent.x, s.tangent.z);
+      // Se la mesh non esiste o è di un modello/colore vecchio, forza la ricostruzione Three.js
+      if (rem && (!rem.mesh || rem.carId !== otherP.carId || rem.color !== otherP.color)) {
+        if (typeof NetworkEngine !== "undefined") {
+          NetworkEngine.rebuildRemoteMesh(otherP.id, otherP.carId, otherP.color, otherP.name);
+          rem = remotePlayers[otherP.id];
+        }
+      }
+
+      const slot = (gridSlots && gridSlots[otherP.id] !== undefined)
+        ? gridSlots[otherP.id]
+        : idx;
+      const slotTrans = this.getGridSlot(slot);
+      const sIdx = slotTrans.sampleIndex;
+      const colOff = slotTrans.lateralOffset;
+      const pos = slotTrans.point;
+      const heading = slotTrans.heading;
 
       const initProgress = -((totalSamples - sIdx) / totalSamples);
 
@@ -587,17 +703,48 @@ const RaceEngine = {
       });
     });
 
-    // Snap camera dietro il player locale
+    // Spawna e posiziona i piloti IA ufficiali F1 per completare la griglia nel Gran Premio LAN
+    if (this.isLanChampionship && typeof ChampionshipEngine !== "undefined" && ChampionshipEngine.state) {
+      const aiDrivers = ChampionshipEngine.state.drivers.filter((d) => d.isAi);
+      aiDrivers.forEach((aiDrv) => {
+        const fallbackSlot = playerList.length + parseInt(String(aiDrv.id).replace("ai_", "") || "1", 10) - 1;
+        const aiSlot = (gridSlots && gridSlots[aiDrv.id] !== undefined)
+          ? gridSlots[aiDrv.id]
+          : fallbackSlot;
+        const slotTrans = this.getGridSlot(aiSlot);
+
+        const aiRacer = this.createRacerEntity({
+          id: aiDrv.id,
+          carConfig: playerCarConfig,
+          driverCode: aiDrv.code,
+          driverName: aiDrv.name,
+          isPlayer: false,
+          sampleIndex: slotTrans.sampleIndex,
+          lateralOffset: slotTrans.lateralOffset,
+          customPaint: aiDrv.paint,
+          aiProfile: aiDrv.aiProfile,
+        });
+        aiRacer.isAi = true;
+        this.aiCars.push(aiRacer);
+        this.allRacers.push(aiRacer);
+      });
+    }
+
+    // Inizializza telecamera GT dinamica
+    this.camHeading = this.player.heading;
     const forward = new THREE.Vector3(
-      Math.sin(this.player.heading),
+      Math.sin(this.camHeading),
       0,
-      Math.cos(this.player.heading),
+      Math.cos(this.camHeading),
     );
     this.camPos
       .copy(this.player.position)
-      .addScaledVector(forward, -8.5)
-      .add(new THREE.Vector3(0, 3.5, 0));
-    this.camLook.copy(this.player.position).addScaledVector(forward, 6);
+      .addScaledVector(forward, -8.4)
+      .add(new THREE.Vector3(0, 2.75, 0));
+    this.camLook
+      .copy(this.player.position)
+      .addScaledVector(forward, 16.5)
+      .add(new THREE.Vector3(0, 1.45, 0));
     GameApp.camera.position.copy(this.camPos);
     GameApp.camera.lookAt(this.camLook);
 
@@ -645,6 +792,7 @@ const RaceEngine = {
     }
     if (modalPause) modalPause.classList.add("hidden");
     if (modalResults) modalResults.classList.add("hidden");
+    this.hideChampionshipModals();
 
     if (raceHud) {
       raceHud.classList.remove("hidden");
@@ -653,7 +801,9 @@ const RaceEngine = {
 
     const trackNameEl = document.getElementById("hud-track-name");
     if (trackNameEl) {
-      trackNameEl.textContent = this.trackConfig.name + " [LAN MULTIPLAYER]";
+      trackNameEl.textContent = this.isLanChampionship && typeof ChampionshipEngine !== "undefined" && ChampionshipEngine.state
+        ? `${this.trackConfig.name} [TAPPA ${ChampionshipEngine.getCurrentStageNumber()}/${ChampionshipEngine.state.totalStages} • LAN GP]`
+        : this.trackConfig.name + " [LAN MULTIPLAYER]";
     }
     const posCard = document.getElementById("hud-pos-card");
     if (posCard) posCard.style.display = "flex";
@@ -669,43 +819,80 @@ const RaceEngine = {
     this.updateHUD(performance.now());
 
     AudioEngine.setDrivingAudioActive(true);
-    UI.showToast(`Gara LAN Avviata! ${this.allRacers.length} piloti in pista!`, "fa-users");
+    const toastMsg = this.isLanChampionship
+      ? `Tappa ${ChampionshipEngine.getCurrentStageNumber()} Avviata! ${this.allRacers.length} vetture sulla griglia!`
+      : `Gara LAN Avviata! ${this.allRacers.length} piloti in pista!`;
+    UI.showToast(toastMsg, "fa-users");
   },
 
-  applyRemoteLeaderboard(standings) {
-    if (!standings || !Array.isArray(standings)) return;
-    const panel = document.getElementById("hud-leaderboard-rows");
-    if (!panel) return;
+  resolveAIRacePersona(aiProfile) {
+    if (!aiProfile) return null;
+    const weights = aiProfile.archetypeWeights || { attacker: 0.35, tactician: 0.35, prudent: 0.30 };
+    const pAttacker = weights.attacker ?? 0.35;
+    const pTactician = pAttacker + (weights.tactician ?? 0.35);
+    const rand = Math.random();
 
-    const myId = (typeof NetworkEngine !== "undefined" && (NetworkEngine.myPlayerId || NetworkEngine.myId)) || "local";
-    const myIdx = standings.findIndex((s) => s.id === myId);
-    if (myIdx !== -1) {
-      const posEl = document.getElementById("hud-position");
-      if (posEl) posEl.textContent = myIdx + 1;
+    let archetype = "tactician";
+    if (rand < pAttacker) {
+      archetype = "attacker";
+    } else if (rand < pTactician) {
+      archetype = "tactician";
+    } else {
+      archetype = "prudent";
     }
 
-    panel.innerHTML = standings
-      .slice(0, 8)
-      .map((s, idx) => {
-        const isMe = s.id === myId;
-        const color = s.color || "#00f0ff";
-        return `
-          <div class="flex items-center justify-between px-2 py-1 rounded ${
-            isMe ? "bg-amber-400/20 border border-amber-400/40" : "bg-slate-900/60"
-          }">
-            <div class="flex items-center gap-1.5">
-              <span class="w-4 text-center font-bold text-slate-400">${idx + 1}</span>
-              <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${color}"></span>
-              <span class="font-bold text-xs ${isMe ? "text-amber-300" : "text-white"} truncate max-w-[90px]">${s.name}</span>
-            </div>
-            <div class="flex items-center gap-1 text-[10px] text-cyan-300 font-bold">
-              <span>L${s.lap || 1}</span>
-              <span class="text-slate-400 font-normal">${s.speedKmh || 0} km/h</span>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
+    // Daily race-day form factor (-0.035 to +0.035)
+    const raceDayForm = (Math.random() - 0.5) * 0.07;
+
+    let cfg = {};
+    if (archetype === "attacker") {
+      cfg = {
+        name: "Attaccante",
+        badgeTag: "ATTACCO",
+        brakeMarginMult: 1.05,
+        aggressionMult: 1.15,
+        skillMult: 1.01,
+        slingshotDist: 25.0,
+        minPassingGap: 2.7,
+        lateralSafetyMargin: 2.8,
+        defensiveBias: 0.90,
+        preferredOffsetBias: (Math.random() - 0.5) * 0.5 - 0.2,
+      };
+    } else if (archetype === "tactician") {
+      cfg = {
+        name: "Tattico",
+        badgeTag: "TATTICA",
+        brakeMarginMult: 1.0,
+        aggressionMult: 1.0,
+        skillMult: 1.0,
+        slingshotDist: 21.0,
+        minPassingGap: 3.1,
+        lateralSafetyMargin: 3.1,
+        defensiveBias: 1.40,
+        preferredOffsetBias: (Math.random() - 0.5) * 0.4,
+      };
+    } else {
+      cfg = {
+        name: "Prudente",
+        badgeTag: "GESTIONE",
+        brakeMarginMult: 0.96,
+        aggressionMult: 0.85,
+        skillMult: 0.99,
+        slingshotDist: 18.0,
+        minPassingGap: 3.5,
+        lateralSafetyMargin: 3.5,
+        defensiveBias: 0.70,
+        preferredOffsetBias: (Math.random() - 0.5) * 0.4 + 0.25,
+      };
+    }
+
+    return {
+      archetype,
+      raceDayForm,
+      lineWaveSeed: Math.random() * 50.0,
+      lineWaveFreq: 0.08 + Math.random() * 0.06,
+      ...cfg,
+    };
   },
 
   createRacerEntity(opts) {
@@ -774,6 +961,7 @@ const RaceEngine = {
       bestLapTime: null,
       finished: false,
       finishTime: 0,
+      finishRank: 0,
       startLaneOffset: opts.lateralOffset,
       currentAimOffset: opts.lateralOffset,
       overtakeBias: 0,
@@ -783,8 +971,25 @@ const RaceEngine = {
       sensorFrontDist: 99,
       sensorFrontSpeed: 0,
       inDraft: false,
+      draftIntensity: 0,
+      draftTargetName: null,
+      draftChargeTimer: 0,
+      draftChargePct: 0,
+      slingshotBoostTimer: 0,
+      slingshotCooldownTimer: 0,
+      isSlingshotBoosting: false,
       launchDelay: opts.aiProfile ? (Math.random() * 0.12 + (this.getDifficultyConfig().reactionDelay || 0)) : 0,
       aiProfile: opts.aiProfile,
+      aiPersona: opts.aiProfile ? this.resolveAIRacePersona(opts.aiProfile) : null,
+      wheelToWheelOverlap: false,
+      wheelToWheelSideOffset: 0,
+      personalLineOffset: 0,
+      stuckTimer: 0,
+      unstickTimer: 0,
+      isUnsticking: false,
+      touchingBarrier: false,
+      collisionCooldownTimer: 0,
+      barrierAvoidOffset: 0,
       pitch: 0,
       roll: 0,
     };
@@ -818,7 +1023,7 @@ const RaceEngine = {
     const nowMs = performance.now();
     if (nowMs - this.fpsLastTime >= 500) {
       this.currentFps = Math.min(
-        60,
+        240,
         Math.round((this.fpsFrames * 1000) / (nowMs - this.fpsLastTime)),
       );
       this.fpsFrames = 0;
@@ -830,7 +1035,7 @@ const RaceEngine = {
     // F1 5-Light Start Sequence
     const gantryEl = document.getElementById("hud-f1-gantry");
     if (this.countdownTimer > 0) {
-      if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+      if ((this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
         const sNow = NetworkEngine.getServerTime();
         this.countdownTimer = Math.max(0, (this.raceStartTimeEpoch - sNow) / 1000);
       } else {
@@ -918,22 +1123,29 @@ const RaceEngine = {
       }
     }
 
-    if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+    if ((this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
       this.raceElapsedSeconds = Math.max(0, (NetworkEngine.getServerTime() - this.raceStartTimeEpoch) / 1000);
     } else {
       this.raceElapsedSeconds += dt;
     }
 
     // Update Player Physics
-    if (!this.player.finished) {
-      this.updatePlayerPhysics(this.player, dt);
-    } else {
-      this.updateCPUAgentPhysics(this.player, dt, true);
-    }
+    // Anche dopo aver tagliato il traguardo il pilota mantiene il CONTROLLO MANUALE
+    // in regime di "crociera libera" fino al transito di tutti gli avversari reali.
+    this.updatePlayerPhysics(this.player, dt);
 
-    // Update AI CPU Racing Agents
-    for (let ai of this.aiCars) {
-      this.updateCPUAgentPhysics(ai, dt, false);
+    // Update AI CPU Racing Agents (Autorità Host nel Gran Premio LAN)
+    const isGuestInLanChamp = (this.isLanChampionship || this.mode === "lan_championship") &&
+                              typeof NetworkEngine !== "undefined" &&
+                              NetworkEngine.isConnected &&
+                              !NetworkEngine.isHost;
+
+    if (!isGuestInLanChamp) {
+      for (let ai of this.aiCars) {
+        this.updateCPUAgentPhysics(ai, dt, Boolean(ai.finished));
+      }
+    } else {
+      this.updateGuestLanAICars(dt);
     }
 
     // 3D Oriented Bounding Sphere Collision Resolution
@@ -943,7 +1155,7 @@ const RaceEngine = {
     this.updateSmokeParticles(dt);
 
     // Aggiorna posizione e progresso dei giocatori remoti per classifica e minimap
-    if (this.mode === "lan_race" && typeof remotePlayers !== "undefined" && this.trackData) {
+    if ((this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) && typeof remotePlayers !== "undefined" && this.trackData) {
       const N = this.trackData.samples.length;
       for (let racer of this.allRacers) {
         if (racer.isRemotePlayer) {
@@ -953,29 +1165,92 @@ const RaceEngine = {
             racer.speed = rem.targetSpeed || 0;
             racer.heading = rem.mesh.rotation.y;
 
-            let closestIdx = racer.sampleIndex;
-            let minDistSq = Infinity;
-            for (let offset = -25; offset <= 25; offset++) {
-              const testIdx = (racer.sampleIndex + offset + N) % N;
-              const sp = this.trackData.samples[testIdx].point;
-              const dx = sp.x - racer.position.x;
-              const dz = sp.z - racer.position.z;
-              const distSq = dx * dx + dz * dz;
-              if (distSq < minDistSq) {
-                minDistSq = distSq;
-                closestIdx = testIdx;
+            if (typeof rem.totalProgress === "number") {
+              racer.totalProgress = rem.totalProgress;
+              racer.lap = rem.lap || 1;
+              racer.sampleIndex = rem.sampleIndex || 0;
+              racer.currentLapTime = rem.curTime || 0;
+              racer.bestLapTime = rem.bestTime || null;
+              racer.finished = Boolean(rem.finished);
+              racer.finishTime = rem.finishTime || 0;
+              if (racer.finished && !this.officialFinishOrder.some((r) => r.id === racer.id)) {
+                this.recordCarFinish(racer, racer.finishTime);
               }
-            }
-            if (racer.sampleIndex > N - 160 && closestIdx < 160) {
-              racer.lap += 1;
-              racer.hasStartedFirstLap = true;
-            }
-            racer.sampleIndex = closestIdx;
-            if (typeof rem.totalProgress !== "number") {
+            } else {
+              let closestIdx = racer.sampleIndex;
+              let minDistSq = Infinity;
+              for (let offset = -25; offset <= 25; offset++) {
+                const testIdx = (racer.sampleIndex + offset + N) % N;
+                const sp = this.trackData.samples[testIdx].point;
+                const dx = sp.x - racer.position.x;
+                const dz = sp.z - racer.position.z;
+                const distSq = dx * dx + dz * dz;
+                if (distSq < minDistSq) {
+                  minDistSq = distSq;
+                  closestIdx = testIdx;
+                }
+              }
+              if (racer.sampleIndex > N - 160 && closestIdx < 160) {
+                racer.lap += 1;
+                racer.hasStartedFirstLap = true;
+              }
+              racer.sampleIndex = closestIdx;
               racer.totalProgress = (racer.hasStartedFirstLap ? racer.lap - 1 : -1) + (closestIdx / N);
             }
           }
         }
+      }
+    }
+
+    // Aggiorna timer globale bandiera a scacchi
+    if (this.chequeredFlagActive) {
+      this.chequeredFlagTimer = (this.chequeredFlagTimer || 0) + dt;
+    }
+
+    // Valutazione arrivo multi-vettura e chiusura naturale della sessione
+    const isCompetitive = (this.mode === "race" || this.mode === "lan_race" || this.mode === "championship" || this.mode === "lan_championship" || this.isLanChampionship);
+    if (isCompetitive && !this.raceSessionClosing && !this.isFinished) {
+      const isLanSession = (this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected;
+      const allCarsDone = this.allRacers.length > 0 && this.allRacers.every((r) => r.finished);
+
+      let allHumansDone = Boolean(this.player && this.player.finished);
+      if (isLanSession) {
+        for (let racer of this.allRacers) {
+          if ((racer.isPlayer || racer.isRemotePlayer) && !racer.finished) {
+            allHumansDone = false;
+            break;
+          }
+        }
+      }
+
+      if (this.player && this.player.finished) {
+        if (this.postRaceCooldownTimer > 0) {
+          this.postRaceCooldownTimer -= dt;
+        }
+
+        // Il pilota resta in crociera libera (controllo manuale). Solo quando TUTTI i
+        // piloti reali (TU + eventuali ospiti umani in LAN) hanno tagliato il traguardo
+        // il cooldown viene ridotto a un breve margine di 2.5s prima della chiusura.
+        if (isLanSession && allHumansDone && this.postRaceCooldownTimer > 2.5) {
+          this.postRaceCooldownTimer = 2.5;
+        }
+
+        const cooldownExpired = this.postRaceCooldownTimer <= 0;
+
+        // Chiusura: tutte le vetture hanno tagliato il traguardo, oppure è scaduto il
+        // budget di attesa dei piloti reali (7s offline, 30s LAN) -> estrapola i ritardatari.
+        if (allCarsDone || cooldownExpired) {
+          this.raceSessionClosing = true;
+          setTimeout(() => {
+            if (!this.isFinished) {
+              this.completeRaceSession();
+            }
+          }, 350);
+        }
+      } else if (this.chequeredFlagActive && this.chequeredFlagTimer > 45.0) {
+        // Safety timeout dopo bandiera a scacchi se il giocatore non riesce a tagliare la linea
+        this.raceSessionClosing = true;
+        this.completeRaceSession();
       }
     }
 
@@ -985,11 +1260,153 @@ const RaceEngine = {
     this.drawMinimap();
   },
 
+  computePlayerSlipstream(car, dt) {
+    if (!this.allRacers || this.allRacers.length <= 1) {
+      car.draftIntensity = THREE.MathUtils.lerp(car.draftIntensity || 0, 0, dt * 5.0);
+      car.draftChargeTimer = 0;
+      car.draftChargePct = 0;
+      car.inDraft = false;
+      car.draftTargetName = null;
+      return;
+    }
+
+    // Cooldown post-boost
+    if (car.slingshotCooldownTimer > 0) {
+      car.slingshotCooldownTimer = Math.max(0, car.slingshotCooldownTimer - dt);
+    }
+
+    // GESTIONE ATTIVA DELLO SLINGSHOT BOOST (DURATA 2.6 SECONDI STILE MARIO KART)
+    if (car.slingshotBoostTimer > 0) {
+      car.slingshotBoostTimer = Math.max(0, car.slingshotBoostTimer - dt);
+      car.isSlingshotBoosting = car.slingshotBoostTimer > 0;
+      car.draftChargeTimer = 0;
+      car.draftChargePct = 0;
+
+      // Durante lo slingshot boost l'intensità resta massima con leggero fade negli ultimi 0.5s
+      const boostTaper = Math.min(1.0, car.slingshotBoostTimer / 0.45);
+      car.draftIntensity = THREE.MathUtils.lerp(car.draftIntensity || 0, boostTaper, dt * 8.0);
+      car.inDraft = true;
+      return;
+    } else {
+      car.isSlingshotBoosting = false;
+    }
+
+    const minSpeedForDraft = 18.0; // ~65 km/h velocità minima
+    if (car.speed < minSpeedForDraft || car.slingshotCooldownTimer > 0) {
+      car.draftChargeTimer = Math.max(0, (car.draftChargeTimer || 0) - dt * 2.2);
+      car.draftChargePct = Math.min(1.0, (car.draftChargeTimer || 0) / 1.30);
+      car.draftIntensity = THREE.MathUtils.lerp(car.draftIntensity || 0, 0, dt * 5.0);
+      car.inDraft = false;
+      car.draftTargetName = null;
+      return;
+    }
+
+    const forwardX = Math.sin(car.heading);
+    const forwardZ = Math.cos(car.heading);
+    const rightX = forwardZ;
+    const rightZ = -forwardX;
+
+    let inWakeCone = false;
+    let closestTarget = null;
+    let closestTargetDistSq = Infinity;
+    let wakeQuality = 0;
+
+    for (let i = 0; i < this.allRacers.length; i++) {
+      const other = this.allRacers[i];
+      if (other === car) continue;
+      if (Math.abs(other.position.y - car.position.y) > 3.2) continue;
+
+      const dx = other.position.x - car.position.x;
+      const dz = other.position.z - car.position.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq > 1156) continue; // Raggio max ~34m
+
+      const fwdProj = dx * forwardX + dz * forwardZ;
+      const latProj = dx * rightX + dz * rightZ;
+
+      // Cono di scia: tra 5.5m e 27.0m in avanti, e entro 2.3m laterali dalla scia
+      if (fwdProj >= 5.5 && fwdProj <= 27.0 && Math.abs(latProj) <= 2.3) {
+        if (other.speed > 13.5) {
+          inWakeCone = true;
+          // Traccia il rivale EFFETTIVAMENTE più vicino, non l'ultimo trovato nel cono
+          if (distSq < closestTargetDistSq) {
+            closestTargetDistSq = distSq;
+            closestTarget = other;
+          }
+
+          const distFactor = fwdProj <= 14.0 ? 1.0 : Math.max(0.2, 1.0 - (fwdProj - 14.0) / 13.0);
+          const latFactor = Math.max(0.2, 1.0 - Math.abs(latProj) / 2.3);
+          const quality = distFactor * latFactor;
+          if (quality > wakeQuality) {
+            wakeQuality = quality;
+          }
+        }
+      }
+    }
+
+    const REQUIRED_CHARGE_TIME = 1.30; // 1.30s di inseguimento per sbloccare il boost
+
+    if (inWakeCone) {
+      car.draftTargetName = closestTarget
+        ? (closestTarget.driverCode || closestTarget.driverName || "VETTURA")
+        : null;
+
+      // Il caricamento cresce progressivamente
+      car.draftChargeTimer = (car.draftChargeTimer || 0) + dt * (0.8 + wakeQuality * 0.5);
+      car.draftChargePct = Math.min(1.0, car.draftChargeTimer / REQUIRED_CHARGE_TIME);
+
+      // Risucchio iniziale moderato durante il caricamento (fino a 0.35)
+      const chargeDraftIntensity = car.draftChargePct * 0.35;
+      car.draftIntensity = THREE.MathUtils.lerp(
+        car.draftIntensity || 0,
+        chargeDraftIntensity,
+        dt * 4.0
+      );
+      car.inDraft = true;
+
+      // SBLOCCO SLINGSHOT BOOST! (Carica completata stile Mario Kart)
+      if (car.draftChargeTimer >= REQUIRED_CHARGE_TIME) {
+        car.slingshotBoostTimer = 2.6; // Dura 2.6 secondi pieni per completare il sorpasso!
+        car.isSlingshotBoosting = true;
+        car.slingshotCooldownTimer = 3.6; // Cooldown per evitare boost a catena immediati
+        car.draftChargeTimer = 0;
+        car.draftChargePct = 0;
+        car.draftIntensity = 1.0;
+
+        // Effetti sonori e visivi di scatto boost
+        if (typeof AudioEngine !== "undefined" && AudioEngine.playSlingshotBoost) {
+          AudioEngine.playSlingshotBoost();
+        } else if (typeof AudioEngine !== "undefined" && AudioEngine.playTurboBoost) {
+          AudioEngine.playTurboBoost();
+        }
+
+        // Camera impact shake
+        this.triggerCameraShake(0.35);
+
+        UI.showToast("🚀 SLINGSHOT BOOST ATTIVO! VAI COL SORPASSO!", "fa-wind");
+      }
+    } else {
+      // Se si esce temporaneamente dalla sagoma, la carica decresce dolcemente senza azzerarsi subito
+      car.draftChargeTimer = Math.max(0, (car.draftChargeTimer || 0) - dt * 1.5);
+      car.draftChargePct = Math.min(1.0, car.draftChargeTimer / REQUIRED_CHARGE_TIME);
+      car.draftIntensity = THREE.MathUtils.lerp(car.draftIntensity || 0, 0, dt * 4.5);
+      car.inDraft = car.draftChargePct > 0.08;
+      if (!car.inDraft) {
+        car.draftTargetName = null;
+      }
+    }
+  },
+
   updatePlayerPhysics(car, dt) {
     const phys = car.carConfig.physics;
     const throttle = this.keys.up ? 1 : 0;
     const brake = this.keys.down ? 1 : 0;
     const handbrake = this.keys.space;
+
+    // 1. Calcolo scia aerodinamica e Slingshot Boost
+    this.computePlayerSlipstream(car, dt);
+    const draftIntensity = car.draftIntensity || 0;
+    const isSlingshot = car.isSlingshotBoosting;
 
     const curSample = this.trackData.samples[car.sampleIndex];
     // FIA DRS Activation: inside DRS Zone + full throttle + no braking + minimal steering angle
@@ -1004,12 +1421,21 @@ const RaceEngine = {
 
     const turboActive =
       curSample && curSample.isTurbo && throttle > 0 && !brake;
-    const effectiveMaxSpeed = car.drsActive
-      ? phys.maxSpeed + 4.0
-      : phys.maxSpeed;
-    const effectiveDrag = car.drsActive
-      ? phys.dragCoeff * 0.72
-      : phys.dragCoeff;
+
+    // Aerodinamica combinata:
+    // Se Slingshot Boost attivo: -38% drag fisso per 2.6s (anche fuori scia per passare l'auto)
+    // Altrimenti: fino a -18% drag proporzionale durante il caricamento
+    const dragReduction = isSlingshot ? 0.38 : (draftIntensity * 0.18);
+    const baseDrag = car.drsActive ? phys.dragCoeff * 0.72 : phys.dragCoeff;
+    const effectiveDrag = baseDrag * (1.0 - dragReduction);
+
+    // Velocità di punta effettiva:
+    // DRS (+14.4 km/h) + Slingshot Boost (+23.8 km/h duraturo) o pre-carica (+6.5 km/h)
+    const slingshotSpeedBonus = isSlingshot ? 6.6 : (draftIntensity * 1.8);
+    const effectiveMaxSpeed =
+      phys.maxSpeed +
+      (car.drsActive ? 4.0 : 0.0) +
+      slingshotSpeedBonus;
 
     const steerInput = (this.keys.left ? 1 : 0) - (this.keys.right ? 1 : 0);
     const speedRatio = Math.min(1, Math.abs(car.speed) / effectiveMaxSpeed);
@@ -1045,10 +1471,13 @@ const RaceEngine = {
       const maxTraction = phys.mass * 9.81 * (phys.gripLateral * 0.08);
       tractiveForce = Math.min(tractiveForce, maxTraction);
 
+      // Spinta motrice con bonus DRS, Turbo Pad e Slingshot Boost duraturo (+32% spinta!)
+      const slingshotDriveMult = isSlingshot ? 1.32 : (1.0 + draftIntensity * 0.10);
       driveForce =
         tractiveForce *
         (car.drsActive ? 1.08 : 1.0) *
-        (turboActive ? 2.35 : 1.0);
+        (turboActive ? 2.35 : 1.0) *
+        slingshotDriveMult;
 
       // Rev limiter: hard power cut above redline
       if (car.rpm >= phys.redlineRPM) {
@@ -1216,7 +1645,84 @@ const RaceEngine = {
       car.speed,
       car.gear,
       dt,
+      car.draftIntensity || 0,
     );
+  },
+
+  applyLanAITelemetry(aiList) {
+    if (!Array.isArray(aiList) || !this.aiCars) return;
+    for (let i = 0; i < aiList.length; i++) {
+      const data = aiList[i];
+      const ai = this.aiCars.find((c) => c.id === data.id);
+      if (ai) {
+        if (!ai.targetPos) {
+          ai.targetPos = new THREE.Vector3(data.x, data.y, data.z);
+        } else {
+          ai.targetPos.set(data.x, data.y, data.z);
+        }
+        ai.targetHeading = data.rotY;
+        ai.targetSpeed = data.speed;
+        ai.speed = data.speed;
+        ai.lap = data.lap;
+        ai.sampleIndex = data.sampleIndex;
+        ai.totalProgress = data.totalProgress;
+        ai.currentLapTime = data.curTime;
+        ai.bestLapTime = data.bestTime;
+        ai.finished = Boolean(data.finished);
+        ai.finishTime = data.finishTime || 0;
+        ai.aiStatusTag = data.aiStatusTag;
+      }
+    }
+  },
+
+  updateGuestLanAICars(dt) {
+    if (!this.aiCars || !this.trackData) return;
+    const safeDt = Math.min(0.1, dt);
+    this._guestAiFrame = (this._guestAiFrame || 0) + 1;
+    const doPitch = (this._guestAiFrame & 1) === 0;
+    const posBlend = 1.0 - Math.exp(-14.0 * safeDt);
+    const rotBlend = 1.0 - Math.exp(-16.0 * safeDt);
+
+    for (const ai of this.aiCars) {
+      if (ai.targetPos) {
+        const distSq = ai.position.distanceToSquared(ai.targetPos);
+        if (distSq > 144) {
+          ai.position.copy(ai.targetPos);
+        } else {
+          ai.position.lerp(ai.targetPos, posBlend);
+        }
+      }
+
+      if (typeof ai.targetHeading === "number") {
+        let diff = (ai.targetHeading - ai.heading) % (Math.PI * 2);
+        if (diff > Math.PI) diff -= Math.PI * 2;
+        if (diff < -Math.PI) diff += Math.PI * 2;
+        ai.heading += diff * rotBlend;
+      }
+
+      if (ai.mesh) {
+        ai.mesh.position.copy(ai.position);
+        ai.mesh.rotation.y = ai.heading;
+
+        // Beccheggio aggiornato a frame alterni (impercettibile) per alleggerire le query di superficie
+        if (doPitch && this.getTrackSurfaceY) {
+          ai.mesh.rotation.order = "YXZ";
+          const sinH = Math.sin(ai.heading);
+          const cosH = Math.cos(ai.heading);
+          const fY = this.getTrackSurfaceY(ai.position.x + sinH * 1.4, ai.position.z + cosH * 1.4, ai.sampleIndex || 0);
+          const rY = this.getTrackSurfaceY(ai.position.x - sinH * 1.4, ai.position.z - cosH * 1.4, ai.sampleIndex || 0);
+          ai.mesh.rotation.x = -Math.atan2(fY - rY, 2.8);
+        }
+
+        const ud = ai.mesh.userData;
+        if (ud && ud.wheelMeshes) {
+          const wDelta = ((ai.speed || 0) / 0.37) * safeDt;
+          ud.wheelMeshes.forEach((w) => {
+            w.rotation.x += wDelta;
+          });
+        }
+      }
+    }
   },
 
   updateCPUAgentPhysics(ai, dt, isCooldownAutopilot) {
@@ -1234,31 +1740,200 @@ const RaceEngine = {
       brakeMargin: 1.0,
       errorRate: 0.0,
     };
+    const persona = ai.aiPersona || {
+      archetype: "tactician",
+      brakeMarginMult: 1.0,
+      aggressionMult: 1.0,
+      skillMult: 1.0,
+      slingshotDist: 21.0,
+      minPassingGap: 3.1,
+      lateralSafetyMargin: 3.1,
+      defensiveBias: 1.0,
+      preferredOffsetBias: 0,
+      lineWaveSeed: 0,
+      lineWaveFreq: 0.1,
+      raceDayForm: 0,
+    };
     const halfWidth = this.trackData.halfWidth;
     const diffConfig = this.getDifficultyConfig();
 
     if (!isCooldownAutopilot && (this.frameCounter + ai.id) % 2 === 0) {
-      this.evaluateAISensorsAndOvertaking(ai, prof, halfWidth);
+      this.evaluateAISensorsAndOvertaking(ai, prof, persona, halfWidth);
     }
 
-    // 1. Dynamic speed-adaptive lookahead
-    // Low speed (e.g. 15 m/s) -> look 11 samples (~40m) ahead to nail tight corners & chicanes
-    // High speed (e.g. 75 m/s) -> look 28 samples (~105m) ahead for high-speed stability
+    // 0. Stuck Detection & Fail-Safe Auto-Recovery
+    if (ai.touchingBarrier) {
+      ai.stuckTimer = (ai.stuckTimer || 0) + dt * 2.5;
+    } else if (this.raceElapsedSeconds > 4.0 && Math.abs(ai.speed) < 1.8) {
+      ai.stuckTimer = (ai.stuckTimer || 0) + dt;
+    } else if (!ai.isUnsticking) {
+      ai.stuckTimer = Math.max(0, (ai.stuckTimer || 0) - dt * 2.0);
+    }
+
+    // Fast unsticking trigger: if touching barrier with low speed (< 9 m/s) or pinned for > 0.35s
+    const shouldUnstickNow = ai.touchingBarrier && (Math.abs(ai.speed) < 9.0 || ai.stuckTimer > 0.35);
+
+    // Safety Respawn Fail-Safe: if stuck for more than 3.2s, recover cleanly onto track centerline
+    if (ai.stuckTimer > 3.2) {
+      const safeSample = samples[ai.sampleIndex];
+      ai.position.copy(safeSample.point);
+      ai.heading = Math.atan2(safeSample.tangent.x, safeSample.tangent.z);
+      ai.lateralDist = 0;
+      ai.currentAimOffset = 0;
+      ai.speed = 18.0;
+      ai.gear = 2;
+      ai.angularVelocity = 0;
+      ai.lateralVel = 0;
+      ai.steerAngle = 0;
+      ai.stuckTimer = 0;
+      ai.unstickTimer = 0;
+      ai.isUnsticking = false;
+      ai.touchingBarrier = false;
+      ai.barrierAvoidOffset = 0;
+      this.spawnTireSmoke(ai);
+      ai.aiStatusTag = "RIENTRO!";
+    }
+    // Trigger unsticking reverse maneuver
+    else if ((shouldUnstickNow || ai.stuckTimer > 0.7) && !ai.isUnsticking) {
+      ai.isUnsticking = true;
+      ai.unstickTimer = 1.25;
+    }
+
+    // ACTIVE UNSTICKING ROUTINE (Reverse Gear & Steer Away)
+    if (ai.isUnsticking) {
+      ai.unstickTimer -= dt;
+      ai.gear = "R";
+      ai.aiStatusTag = "MANOVRA!";
+
+      // Steer sharply AWAY from the barrier / wall
+      const steerAwaySign = (ai.lateralDist >= 0) ? -1 : 1;
+      const unstickSteer = steerAwaySign * phys.steerRate * 0.95;
+      ai.steerAngle = THREE.MathUtils.damp(ai.steerAngle, unstickSteer, 14.0, dt);
+
+      // Actively orient car nose towards open track
+      const safeSample = samples[ai.sampleIndex];
+      const trackYaw = Math.atan2(safeSample.tangent.x, safeSample.tangent.z);
+      const targetUnstickHeading = trackYaw + (ai.lateralDist >= 0 ? -0.40 : 0.40);
+      let headDiff = targetUnstickHeading - ai.heading;
+      while (headDiff > Math.PI) headDiff -= Math.PI * 2;
+      while (headDiff < -Math.PI) headDiff += Math.PI * 2;
+      ai.heading += THREE.MathUtils.clamp(headDiff * 4.5, -3.2, 3.2) * dt;
+
+      // Reverse propulsion: accelerate backwards to -8.5 m/s
+      const targetRevSpeed = -8.5;
+      const revDelta = targetRevSpeed - ai.speed;
+      const accel = THREE.MathUtils.clamp(revDelta * 4.0, -9.0, 5.0);
+      ai.speed = THREE.MathUtils.clamp(ai.speed + accel * dt, -10.0, 15.0);
+
+      // Lateral drift impulse away from barrier towards track center
+      ai.lateralVel = (ai.lateralDist >= 0 ? -2.2 : 2.2);
+
+      if (ai.angularVelocity) {
+        ai.angularVelocity = THREE.MathUtils.damp(ai.angularVelocity, 0, 8.5, dt);
+      }
+
+      const aiFwdX = Math.sin(ai.heading);
+      const aiFwdZ = Math.cos(ai.heading);
+      const aiRightX = aiFwdZ;
+      const aiRightZ = -aiFwdX;
+
+      ai.position.x += (aiFwdX * ai.speed + aiRightX * (ai.lateralVel || 0)) * dt;
+      ai.position.z += (aiFwdZ * ai.speed + aiRightZ * (ai.lateralVel || 0)) * dt;
+
+      this.updateSplineProgressAndWalls(ai, dt);
+      this.updateGearAndRPM(ai, -1, dt);
+      this.applyVisualDynamics(ai, accel, ai.steerAngle, false, dt);
+
+      // Early completion if the car has separated cleanly from the barrier
+      const hasClearedBarrier = Math.abs(ai.lateralDist || 0) < halfWidth * 0.75 && !ai.touchingBarrier;
+      if (ai.unstickTimer <= 0 || (ai.unstickTimer < 0.85 && hasClearedBarrier)) {
+        ai.isUnsticking = false;
+        ai.stuckTimer = 0;
+        ai.gear = 1;
+        ai.speed = 4.0;
+        ai.touchingBarrier = false;
+        ai.lateralVel = 0;
+      }
+      return;
+    }
+
+    // 0B. Virtual Barrier Radar & Predictive Wall Collision Avoidance
+    const curSample = samples[ai.sampleIndex];
+    const barrierLimit = this.trackData.barrierOffset
+      ? (this.trackData.barrierOffset - 1.2)
+      : (halfWidth + 1.2);
+
+    const aiSin = Math.sin(ai.heading);
+    const aiCos = Math.cos(ai.heading);
+    const vWorldX = aiSin * ai.speed + aiCos * (ai.lateralVel || 0);
+    const vWorldZ = aiCos * ai.speed - aiSin * (ai.lateralVel || 0);
+
+    // Lateral velocity towards right track barrier (positive = approaching right wall)
+    const vLatTowardsRight = vWorldX * curSample.right.x + vWorldZ * curSample.right.z;
+    const distToRight = barrierLimit - (ai.lateralDist || 0);
+    const distToLeft = (ai.lateralDist || 0) - (-barrierLimit);
+
+    let emergencyWallBrake = false;
+
+    if (vLatTowardsRight > 1.2 && distToRight < 3.2) {
+      const timeToImpact = distToRight / vLatTowardsRight;
+      if (timeToImpact < 0.70) {
+        ai.barrierAvoidOffset = -3.8;
+        if (timeToImpact < 0.45) emergencyWallBrake = true;
+      }
+    } else if (vLatTowardsRight < -1.2 && distToLeft < 3.2) {
+      const timeToImpact = distToLeft / (-vLatTowardsRight);
+      if (timeToImpact < 0.70) {
+        ai.barrierAvoidOffset = 3.8;
+        if (timeToImpact < 0.45) emergencyWallBrake = true;
+      }
+    }
+
+    // 1. Curvature-Adaptive Dynamic Lookahead
+    // Measure upcoming curvature over the next 12 samples to adapt horizon
+    let maxUpcomingCurv = 0;
+    for (let k = 1; k <= 12; k++) {
+      const cVal = samples[(ai.sampleIndex + k) % N].curvature || 0;
+      if (cVal > maxUpcomingCurv) maxUpcomingCurv = cVal;
+    }
+
     const speedRatio = THREE.MathUtils.clamp(ai.speed / (phys.maxSpeed || 80), 0, 1);
-    const lookDistSamples = Math.round(THREE.MathUtils.lerp(11, 28, speedRatio));
+    const baseLookDist = THREE.MathUtils.lerp(12, 28, speedRatio);
+    // On straights, look far (18-28 samples). In sharp turns/chicanes, compress down to 6-9 samples to track apex
+    const curvFactor = THREE.MathUtils.clamp(maxUpcomingCurv / 0.26, 0, 1);
+    const lookDistSamples = Math.round(THREE.MathUtils.lerp(baseLookDist, 6, curvFactor * 0.75));
     const lookAheadIdx = (ai.sampleIndex + lookDistSamples) % N;
     const lookSample = samples[lookAheadIdx];
 
-    // 2. Desired trajectory offset
-    let desiredOffset = (lookSample.racingOffset || 0) + (ai.overtakeBias || 0);
+    // 2. Desired trajectory offset with Apex Damping (Anti-Trenino on straights, Precision on Apex)
+    const apexTightness = THREE.MathUtils.clamp(maxUpcomingCurv / 0.16, 0, 1);
+    const wave = Math.sin(ai.sampleIndex * (persona.lineWaveFreq || 0.1) + (persona.lineWaveSeed || 0)) * 0.35;
+    // Smorzamento dell'offset personale all'apice per evitare uscite di pista nei tornanti
+    const personalOffset = ((persona.preferredOffsetBias || 0) + wave) * (1.0 - apexTightness * 0.80);
+    ai.personalLineOffset = THREE.MathUtils.lerp(ai.personalLineOffset || 0, personalOffset, dt * 1.8);
 
-    // Staggered grid start lane blend
-    if (this.raceElapsedSeconds < 3.2) {
-      const blend = this.raceElapsedSeconds / 3.2;
+    let desiredOffset = (lookSample.racingOffset || 0) + ai.personalLineOffset + (ai.overtakeBias || 0);
+
+    // Apply active barrier repulsion offset
+    if (ai.barrierAvoidOffset) {
+      desiredOffset += ai.barrierAvoidOffset;
+      ai.barrierAvoidOffset *= 0.82;
+      if (Math.abs(ai.barrierAvoidOffset) < 0.08) ai.barrierAvoidOffset = 0;
+    }
+
+    // Side-by-side wheel-to-wheel evasive offset (leaves space for alongside rivals)
+    if (ai.wheelToWheelSideOffset) {
+      desiredOffset += ai.wheelToWheelSideOffset;
+    }
+
+    // Staggered grid start lane blend: smoother transition over 4.5 seconds
+    if (this.raceElapsedSeconds < 4.5) {
+      const blend = THREE.MathUtils.clamp(this.raceElapsedSeconds / 4.5, 0, 1);
+      const easeBlend = blend * blend * (3 - 2 * blend);
       desiredOffset = THREE.MathUtils.lerp(
         ai.startLaneOffset,
         desiredOffset,
-        blend,
+        easeBlend,
       );
     }
 
@@ -1266,7 +1941,7 @@ const RaceEngine = {
     if (ai.errorWideTimer > 0) {
       ai.errorWideTimer -= dt;
       const outsideDir = -Math.sign(lookSample.signedCurvature || 1);
-      desiredOffset = outsideDir * (halfWidth * 0.78);
+      desiredOffset = THREE.MathUtils.lerp(desiredOffset, outsideDir * (halfWidth * 0.78), 0.75);
       ai.aiStatusTag = "LUNGO!";
     }
 
@@ -1280,10 +1955,10 @@ const RaceEngine = {
     ai.currentAimOffset = THREE.MathUtils.lerp(
       ai.currentAimOffset,
       desiredOffset,
-      dt * (Math.abs(ai.steerAngle) > 0.22 ? 5.2 : 3.8),
+      dt * (Math.abs(ai.steerAngle) > 0.22 ? 5.5 : 4.0),
     );
 
-    // 3. Target Position & Smooth Steering Calculation
+    // 3. Target Position & Stanley Cross-Track Error (CTE) Steering Control
     const targetPos = lookSample.point
       .clone()
       .addScaledVector(lookSample.right, ai.currentAimOffset);
@@ -1291,21 +1966,28 @@ const RaceEngine = {
     const toTargetZ = targetPos.z - ai.position.z;
     const desiredHeading = Math.atan2(toTargetX, toTargetZ);
 
-    let diff = desiredHeading - ai.heading;
+    // Stanley CTE correction: pulls car firmly back onto the line when sliding wide
+    const latError = ai.currentAimOffset - (ai.lateralDist || 0);
+    const kCte = 1.35;
+    const vSoft = Math.max(3.5, Math.abs(ai.speed));
+    const cteHeadingCorr = Math.atan2(latError * kCte, vSoft);
+
+    let diff = (desiredHeading - ai.heading) + cteHeadingCorr;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
 
     // Smooth PD steering control
     const targetSteerAngle = THREE.MathUtils.clamp(
-      diff * 2.2,
+      diff * 2.1,
       -phys.steerRate,
       phys.steerRate,
     );
-    ai.steerAngle = THREE.MathUtils.damp(ai.steerAngle, targetSteerAngle, 12.0, dt);
+    ai.steerAngle = THREE.MathUtils.damp(ai.steerAngle, targetSteerAngle, 14.0, dt);
 
-    // Speed-sensitive yaw turning authority
-    const turnAuthority = THREE.MathUtils.clamp(Math.abs(ai.speed) / 4.8, 0.12, 1.0);
-    const steeringAngularVel = ai.steerAngle * turnAuthority * 2.15;
+    // Speed-sensitive yaw turning authority with anti-fishtail damping
+    const minAuthority = ai.touchingBarrier ? 0.45 : 0.20;
+    const turnAuthority = THREE.MathUtils.clamp(Math.abs(ai.speed) / 4.0, minAuthority, 1.0);
+    const steeringAngularVel = ai.steerAngle * turnAuthority * 1.85;
     ai.heading += (steeringAngularVel + (ai.angularVelocity || 0)) * dt;
 
     if (ai.angularVelocity) {
@@ -1325,20 +2007,32 @@ const RaceEngine = {
     }
 
     // 4. DRS System
-    const curSample = samples[ai.sampleIndex];
     ai.drsActive = Boolean(
       curSample && curSample.isDRS && Math.abs(ai.steerAngle) < 0.22,
     );
 
-    // 5. Predictive Braking Horizon Scanning
-    // Scan ahead across the braking horizon using kinematic deceleration
-    const brakeHorizonSamples = Math.round(THREE.MathUtils.clamp(ai.speed * 0.38 + 8, 12, 42));
-    const effectiveBrakeMargin = prof.brakeMargin * diffConfig.brakeMarginMult;
+    // 5. Predictive Braking Horizon Scanning (Precision Step=1 for the first 10 samples)
+    const brakeHorizonSamples = Math.round(THREE.MathUtils.clamp(ai.speed * 0.40 + 8, 14, 46));
+    const effectiveBrakeMargin = prof.brakeMargin * diffConfig.brakeMarginMult * (persona.brakeMarginMult || 1.0);
     const maxDecel = (phys.brakeForce / phys.mass) * 0.90 * effectiveBrakeMargin;
     const segLength = (this.trackData.totalLength && N) ? (this.trackData.totalLength / N) : 3.8;
 
     let horizonTargetSpeed = Infinity;
-    for (let step = 4; step <= brakeHorizonSamples; step += 4) {
+    // Step 1: scan next 10 samples individually for millimeter-accurate braking point
+    const fineSteps = Math.min(10, brakeHorizonSamples);
+    for (let step = 1; step <= fineSteps; step++) {
+      const scanIdx = (ai.sampleIndex + step) % N;
+      const scanSample = samples[scanIdx];
+      const distToScan = step * segLength;
+      const allowedSpeed = Math.sqrt(
+        scanSample.targetSpeed * scanSample.targetSpeed + 2 * maxDecel * distToScan,
+      );
+      if (allowedSpeed < horizonTargetSpeed) {
+        horizonTargetSpeed = allowedSpeed;
+      }
+    }
+    // Step 2: scan remaining horizon in strides of 3
+    for (let step = 12; step <= brakeHorizonSamples; step += 3) {
       const scanIdx = (ai.sampleIndex + step) % N;
       const scanSample = samples[scanIdx];
       const distToScan = step * segLength;
@@ -1350,8 +2044,19 @@ const RaceEngine = {
       }
     }
 
-    const effectiveSkill = prof.skill * diffConfig.skillMult;
-    let targetSpeed = Math.min(curSample.targetSpeed, horizonTargetSpeed) * effectiveSkill;
+    // Physics Lateral Grip Limit in current turn
+    const curCurv = curSample.curvature || 0;
+    let gripSpeedLimit = Infinity;
+    if (curCurv > 0.005) {
+      const latGrip = (phys.gripLateral || 15.0) * 1.35;
+      const kappaPerMeter = curCurv / (18 * segLength);
+      if (kappaPerMeter > 0.001) {
+        gripSpeedLimit = Math.sqrt(latGrip / kappaPerMeter);
+      }
+    }
+
+    const effectiveSkill = (prof.skill + (persona.raceDayForm || 0)) * diffConfig.skillMult * (persona.skillMult || 1.0);
+    let targetSpeed = Math.min(curSample.targetSpeed, horizonTargetSpeed, gripSpeedLimit) * effectiveSkill;
 
     // DRS and Slipstream speed boosts
     if (ai.drsActive) targetSpeed += 3.8;
@@ -1360,12 +2065,23 @@ const RaceEngine = {
     // Cooldown autopilot at race end
     if (isCooldownAutopilot) targetSpeed *= 0.65;
 
-    // 6. Collision Avoidance Speed Modulation
-    if (ai.sensorBlockedFront && ai.sensorFrontDist < 16) {
+    // 6. Collision Avoidance Speed Modulation (Anti-Accordion)
+    if (ai.sensorBlockedFront && ai.sensorFrontDist < 26) {
       const frontSpeed = ai.sensorFrontSpeed || ai.speed;
-      const distCushion = Math.max(0.1, (ai.sensorFrontDist - 3.5) / 12.5);
-      const safeFollowSpeed = THREE.MathUtils.lerp(frontSpeed * 0.95, frontSpeed * 1.02, distCushion);
-      targetSpeed = Math.min(targetSpeed, safeFollowSpeed);
+      const desiredFollowGap = Math.max(5.0, ai.speed * 0.20);
+      const gapError = ai.sensorFrontDist - desiredFollowGap;
+
+      if (gapError < 0) {
+        // Too close! Smoothly drop speed proportional to deficit
+        const deficitRatio = THREE.MathUtils.clamp(-gapError / desiredFollowGap, 0, 1);
+        const safeFollowSpeed = frontSpeed * (1.0 - deficitRatio * 0.08);
+        targetSpeed = Math.min(targetSpeed, safeFollowSpeed);
+      } else {
+        // Approaching from behind: smoothly blend target speed towards frontSpeed
+        const blend = THREE.MathUtils.clamp(gapError / 18.0, 0, 1);
+        const safeApproachSpeed = THREE.MathUtils.lerp(frontSpeed * 1.01, targetSpeed, blend);
+        targetSpeed = Math.min(targetSpeed, safeApproachSpeed);
+      }
     }
 
     // 7. Spin / Slide / Off-Track Recovery
@@ -1384,30 +2100,51 @@ const RaceEngine = {
       }
     }
 
-    // 8. Acceleration / Braking Forces with Traction Control
+    // 8. Acceleration / Braking Forces with Real Exit Traction Control & Proportional Braking
     let accel = 0;
     const speedDelta = targetSpeed - ai.speed;
     const effectiveEngineForce = phys.engineForce * diffConfig.accelMult;
 
-    if (speedDelta > 0.4) {
-      const steerFactor = THREE.MathUtils.clamp(
-        1.0 - (Math.abs(ai.steerAngle) / phys.steerRate) * 0.40,
-        0.60,
-        1.0,
-      );
+    // Instant Throttle Cut & Active Braking:
+    // If car is touching a barrier, if virtual radar senses imminent wall crash,
+    // or if in collision cooldown: NEVER accelerate into the wall/car!
+    if (ai.touchingBarrier || emergencyWallBrake || ((ai.collisionCooldownTimer || 0) > 0)) {
+      const brakeRatio = (ai.touchingBarrier || emergencyWallBrake) ? 0.55 : 0.28;
+      accel = -(phys.brakeForce / phys.mass) * brakeRatio;
+      if (ai.touchingBarrier) {
+        ai.aiStatusTag = "MURO!";
+      } else if (emergencyWallBrake) {
+        ai.aiStatusTag = "FRENA!";
+      } else if ((ai.collisionCooldownTimer || 0) > 0) {
+        ai.aiStatusTag = "ATTENZIONE!";
+      }
+    } else if (speedDelta > 0.3) {
+      // Exit Traction Control: limit drive force when steering angle is large to prevent understeer push
+      const steerRatio = THREE.MathUtils.clamp(Math.abs(ai.steerAngle) / (phys.steerRate || 0.75), 0, 1);
+      const tractionFactor = THREE.MathUtils.lerp(1.0, 0.40, steerRatio * steerRatio);
+
       const launchGrip = this.raceElapsedSeconds < 2.5
         ? 0.85 + effectiveSkill * 0.15
         : 0.96;
-      accel = (effectiveEngineForce / phys.mass) * launchGrip * steerFactor;
+      accel = (effectiveEngineForce / phys.mass) * launchGrip * tractionFactor;
       if (ai.inDraft) accel *= 1.10;
-    } else if (speedDelta < -0.6) {
-      accel = -(phys.brakeForce / phys.mass) * 0.92;
+    } else if (speedDelta >= -1.6) {
+      // Lift & Coast / Gentle Engine Braking
+      accel = -(phys.brakeForce / phys.mass) * 0.08 - (ai.speed * 0.10);
+    } else {
+      // Progressive Braking proportional to urgency
+      const brakeSeverity = THREE.MathUtils.clamp((-speedDelta - 1.6) / 8.5, 0.22, 0.94);
+      accel = -(phys.brakeForce / phys.mass) * brakeSeverity * (persona.brakeMarginMult || 1.0);
+    }
+
+    if (ai.collisionCooldownTimer > 0) {
+      ai.collisionCooldownTimer = Math.max(0, ai.collisionCooldownTimer - dt);
     }
 
     const effectiveMaxSpeed = phys.maxSpeed * diffConfig.topSpeedMult;
     ai.speed = THREE.MathUtils.clamp(
       ai.speed + accel * dt,
-      6,
+      0,
       effectiveMaxSpeed * (ai.drsActive ? 1.05 : 1.02),
     );
 
@@ -1431,7 +2168,7 @@ const RaceEngine = {
     );
   },
 
-  evaluateAISensorsAndOvertaking(ai, prof, halfWidth) {
+  evaluateAISensorsAndOvertaking(ai, prof, persona, halfWidth) {
     const forwardX = Math.sin(ai.heading);
     const forwardZ = Math.cos(ai.heading);
     const rightX = forwardZ;
@@ -1445,6 +2182,11 @@ const RaceEngine = {
     let sideAvoidOffset = 0;
     let pressuredFromBehind = false;
     let inDraft = false;
+    let wheelToWheelActive = false;
+
+    const lateralSafety = (persona && persona.lateralSafetyMargin) || 3.1;
+    const minPassingGap = (persona && persona.minPassingGap) || 3.0;
+    const slingshotDist = (persona && persona.slingshotDist) || 21.0;
 
     for (let other of this.allRacers) {
       if (other === ai) continue;
@@ -1453,100 +2195,118 @@ const RaceEngine = {
       const dx = other.position.x - ai.position.x;
       const dz = other.position.z - ai.position.z;
       const distSq = dx * dx + dz * dz;
-      if (distSq > 900) continue; // 30m detection radius
+      if (distSq > 1024) continue; // ~32m radius
 
       const fwdProj = dx * forwardX + dz * forwardZ;
       const latProj = dx * rightX + dz * rightZ;
 
-      if (fwdProj > 0 && fwdProj < 32) {
+      // Front quadrant (ahead)
+      if (fwdProj > 0 && fwdProj < 34) {
         if (Math.abs(latProj) < 2.3 && fwdProj < minCenterDist) {
           minCenterDist = fwdProj;
           frontCarSpeed = other.speed;
           frontCarLat = latProj;
         }
 
-        // Slipstream drafting detection between 8m and 28m
-        if (fwdProj > 8 && fwdProj < 28 && Math.abs(latProj) < 2.4 && ai.speed > 24) {
+        // Slipstream drafting detection between 7m and 30m
+        if (fwdProj > 7 && fwdProj < 30 && Math.abs(latProj) < 2.5 && ai.speed > 24) {
           inDraft = true;
         }
 
-        if (latProj < -1.2 && latProj > -5.2 && fwdProj < 22) {
+        if (latProj < -1.1 && latProj > -5.2 && fwdProj < 24) {
           leftBlocked = true;
         }
-        if (latProj > 1.2 && latProj < 5.2 && fwdProj < 22) {
+        if (latProj > 1.1 && latProj < 5.2 && fwdProj < 24) {
           rightBlocked = true;
         }
-      } else if (Math.abs(fwdProj) < 5.8 && Math.abs(latProj) < 3.2) {
+      }
+      // Side quadrant (wheel-to-wheel alongside - leave space)
+      else if (Math.abs(fwdProj) <= 6.2 && Math.abs(latProj) < (lateralSafety + 0.8)) {
+        wheelToWheelActive = true;
+        const pushMag = Math.max(1.8, THREE.MathUtils.lerp(3.2, 1.8, Math.abs(latProj) / (lateralSafety + 0.8)));
+        const trackMargin = halfWidth - 1.8;
         if (latProj > 0) {
-          sideAvoidOffset -= 1.2;
+          // Rival on right: push left to leave space, but don't push into left barrier
+          const maxLeftPush = Math.max(0, (ai.lateralDist || 0) - (-trackMargin));
+          sideAvoidOffset -= Math.min(pushMag, maxLeftPush);
         } else {
-          sideAvoidOffset += 1.2;
+          // Rival on left: push right to leave space, but don't push into right barrier
+          const maxRightPush = Math.max(0, trackMargin - (ai.lateralDist || 0));
+          sideAvoidOffset += Math.min(pushMag, maxRightPush);
         }
-      } else if (fwdProj < 0 && fwdProj > -10.0 && Math.abs(latProj) < 2.8) {
+      }
+      // Rear quadrant (pressure from behind)
+      else if (fwdProj < 0 && fwdProj > -12.0 && Math.abs(latProj) < 2.8) {
         pressuredFromBehind = true;
       }
     }
 
     ai.sensorFrontDist = minCenterDist;
-    ai.sensorBlockedFront = minCenterDist < 20;
+    ai.sensorBlockedFront = minCenterDist < 24;
     ai.sensorFrontSpeed = frontCarSpeed;
     ai.inDraft = inDraft;
+    ai.wheelToWheelOverlap = wheelToWheelActive;
+    ai.wheelToWheelSideOffset = THREE.MathUtils.lerp(
+      ai.wheelToWheelSideOffset || 0,
+      sideAvoidOffset,
+      0.35,
+    );
 
     const diff = this.getDifficultyConfig();
-    const aggression = prof.aggression * diff.aggressionMult;
+    const effectiveAggression = prof.aggression * diff.aggressionMult * ((persona && persona.aggressionMult) || 1.0);
     const trackMargin = halfWidth - 1.8;
 
-    if (ai.sensorBlockedFront) {
-      const canGoLeft = !leftBlocked && (ai.lateralDist - 3.8 > -trackMargin);
-      const canGoRight = !rightBlocked && (ai.lateralDist + 3.8 < trackMargin);
+    const canGoLeft = !leftBlocked && (ai.lateralDist - minPassingGap > -trackMargin);
+    const canGoRight = !rightBlocked && (ai.lateralDist + minPassingGap < trackMargin);
 
-      if (minCenterDist < 14 && (canGoLeft || canGoRight)) {
-        let passRight = canGoRight;
-        if (frontCarLat < -0.3 && canGoRight) {
-          passRight = true;
-        } else if (frontCarLat > 0.3 && canGoLeft) {
-          passRight = false;
-        } else if (canGoLeft && canGoRight) {
-          passRight = ai.lateralDist < 0;
-        }
+    // Overtaking & Slingshot logic
+    const isClosingFast = inDraft && (ai.speed > frontCarSpeed + 0.8);
+    const shouldSlingshot = isClosingFast && minCenterDist < slingshotDist && (canGoLeft || canGoRight);
 
-        const targetBias = (passRight ? 4.2 : -4.2) * Math.min(1.25, aggression);
-        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, targetBias, 0.25);
-        ai.aiStatusTag = "SORPASSO";
-      } else if (inDraft) {
-        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, frontCarLat * 0.6, 0.15);
-        ai.aiStatusTag = "SCIA";
-      } else {
-        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, sideAvoidOffset, 0.2);
-        ai.aiStatusTag = "SEGUI";
+    if (shouldSlingshot || (ai.sensorBlockedFront && minCenterDist < 16 && (canGoLeft || canGoRight))) {
+      let passRight = canGoRight;
+      if (frontCarLat < -0.3 && canGoRight) {
+        passRight = true;
+      } else if (frontCarLat > 0.3 && canGoLeft) {
+        passRight = false;
+      } else if (canGoLeft && canGoRight) {
+        passRight = ai.lateralDist < 0;
       }
+
+      const passOffset = (passRight ? 4.2 : -4.2) * Math.min(1.25, effectiveAggression);
+      ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, passOffset, 0.28);
+      ai.aiStatusTag = shouldSlingshot ? "SLINGSHOT" : "SORPASSO";
+    } else if (inDraft && !ai.sensorBlockedFront) {
+      ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, frontCarLat * 0.5, 0.15);
+      ai.aiStatusTag = "SCIA";
+    } else if (ai.sensorBlockedFront) {
+      ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, sideAvoidOffset, 0.22);
+      ai.aiStatusTag = "SEGUI";
     } else {
-      if (Math.abs(sideAvoidOffset) > 0.1) {
-        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, sideAvoidOffset, 0.2);
-      } else {
-        ai.overtakeBias *= 0.82;
-        if (Math.abs(ai.overtakeBias) < 0.2) {
-          ai.overtakeBias = 0;
-          ai.aiStatusTag = ai.drsActive ? "DRS" : "";
-        }
+      // Natural return to personal line
+      ai.overtakeBias *= 0.86;
+      if (Math.abs(ai.overtakeBias) < 0.15) {
+        ai.overtakeBias = 0;
+        ai.aiStatusTag = ai.drsActive ? "DRS" : (persona && persona.badgeTag) || "";
       }
     }
 
-    // Defend inside apex on hard/legend when pressured from behind
-    if (pressuredFromBehind && diff.aggressionMult >= 1.0 && ai.errorWideTimer <= 0) {
+    // Defend inside apex when pressured from behind (Tattico/Attaccante)
+    if (pressuredFromBehind && diff.aggressionMult >= 0.95 && ai.errorWideTimer <= 0) {
+      const defBias = (persona && persona.defensiveBias) || 1.0;
       const upcomingIdx = (ai.sampleIndex + 20) % this.trackData.samples.length;
       const curv = this.trackData.samples[upcomingIdx].curvature;
-      if (curv > 0.12) {
+      if (curv > 0.10) {
         const insideDir = Math.sign(this.trackData.samples[upcomingIdx].signedCurvature || 1);
-        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, insideDir * 2.2, 0.15);
+        ai.overtakeBias = THREE.MathUtils.lerp(ai.overtakeBias, insideDir * 2.3 * defBias, 0.20);
         ai.aiStatusTag = "DIFESA";
       }
     }
 
-    // Pressure mistake chance (scaled by difficulty errorMult)
+    // Pressure mistake chance (scaled by difficulty errorMult and driver errorRate)
     const upcomingCurv = this.trackData.samples[(ai.sampleIndex + 22) % this.trackData.samples.length].curvature;
     if (pressuredFromBehind && upcomingCurv > 0.14 && ai.errorWideTimer <= 0) {
-      const mistakeChance = prof.errorRate * diff.errorMult * 0.06;
+      const mistakeChance = prof.errorRate * diff.errorMult * 0.05;
       if (Math.random() < mistakeChance) {
         ai.errorWideTimer = 1.35;
         this.spawnTireSmoke(ai);
@@ -1554,9 +2314,14 @@ const RaceEngine = {
     }
   },
 
-  getTrackElevationAndNormal(x, z, refIdx = 0) {
+  // Calcolo condiviso della superficie pista. Se `normalOut` (THREE.Vector3) è
+  // fornito vi scrive la normale riutilizzandolo; ritorna la quota Y e salva
+  // l'indice del campione in `this._lastSurfaceBestIdx` (nessuna allocazione).
+  _computeTrackSurface(x, z, refIdx = 0, normalOut = null) {
     if (!this.trackData || !this.trackData.samples || !this.trackData.samples.length) {
-      return { y: 0, normal: new THREE.Vector3(0, 1, 0), bestIdx: 0 };
+      if (normalOut) normalOut.set(0, 1, 0);
+      this._lastSurfaceBestIdx = 0;
+      return 0;
     }
     const samples = this.trackData.samples;
     const N = samples.length;
@@ -1612,8 +2377,8 @@ const RaceEngine = {
     const pY = THREE.MathUtils.lerp(sA.point.y, sB.point.y, t);
     const pZ = THREE.MathUtils.lerp(sA.point.z, sB.point.z, t);
 
-    const nA = sA.normal || new THREE.Vector3(0, 1, 0);
-    const nB = sB.normal || new THREE.Vector3(0, 1, 0);
+    const nA = sA.normal || { x: 0, y: 1, z: 0 };
+    const nB = sB.normal || { x: 0, y: 1, z: 0 };
     const normX = THREE.MathUtils.lerp(nA.x, nB.x, t);
     const normY = THREE.MathUtils.lerp(nA.y, nB.y, t);
     const normZ = THREE.MathUtils.lerp(nA.z, nB.z, t);
@@ -1622,15 +2387,40 @@ const RaceEngine = {
     const ny = Math.max(0.05, normY / nLen);
     const nz = normZ / nLen;
 
+    if (normalOut) normalOut.set(nx, ny, nz);
+
     // Track road mesh surface sits at center line + 0.03
     const baseY = pY + 0.03;
     const surfaceY = baseY - ((x - pX) * nx + (z - pZ) * nz) / ny;
 
-    return {
-      y: surfaceY,
-      normal: new THREE.Vector3(nx, ny, nz),
-      bestIdx,
-    };
+    this._lastSurfaceBestIdx = bestIdx;
+    return surfaceY;
+  },
+
+  // Variante "leggera": ritorna solo la quota Y della superficie pista, senza
+  // allocare vettori. Usata dalle interpolazioni per-frame di auto remote e IA.
+  getTrackSurfaceY(x, z, refIdx = 0) {
+    return this._computeTrackSurface(x, z, refIdx, null);
+  },
+
+  // Ritorna un oggetto { y, normal, bestIdx }. Se `normalOut` è fornito la
+  // normale viene scritta lì (e l'oggetto risultato è un buffer riutilizzato),
+  // evitando allocazioni per-frame nel ciclo di aggiornamento delle auto.
+  getTrackElevationAndNormal(x, z, refIdx = 0, normalOut = null) {
+    if (normalOut) {
+      const out = this._surfaceScratch || (this._surfaceScratch = {
+        y: 0,
+        normal: new THREE.Vector3(0, 1, 0),
+        bestIdx: 0,
+      });
+      out.normal = normalOut;
+      out.y = this._computeTrackSurface(x, z, refIdx, normalOut);
+      out.bestIdx = this._lastSurfaceBestIdx;
+      return out;
+    }
+    const normal = new THREE.Vector3(0, 1, 0);
+    const y = this._computeTrackSurface(x, z, refIdx, normal);
+    return { y, normal, bestIdx: this._lastSurfaceBestIdx };
   },
 
   updateSplineProgressAndWalls(car, dt) {
@@ -1657,30 +2447,33 @@ const RaceEngine = {
     car.sampleIndex = bestIdx;
     const closestSample = samples[bestIdx];
 
-    const surfaceInfo = this.getTrackElevationAndNormal(
+    // Normale e quota pista scritti in buffer riutilizzati (nessuna allocazione per-frame)
+    if (!car.trackNormal) car.trackNormal = new THREE.Vector3(0, 1, 0);
+    const surfaceY = this.getTrackElevationAndNormal(
       car.position.x,
       car.position.z,
       bestIdx,
-    );
-    car.trackSurfaceY = surfaceInfo.y;
-    car.trackNormal = surfaceInfo.normal;
+      car.trackNormal,
+    ).y;
+    car.trackSurfaceY = surfaceY;
 
     car.position.y = THREE.MathUtils.lerp(
       car.position.y,
-      surfaceInfo.y,
+      surfaceY,
       Math.min(1, dt * 25),
     );
 
-    // Lap Crossing Detection (scaled for SAMPLE_COUNT = 1500)
-    if (!car.hasStartedFirstLap && bestIdx < 160 && prevIdx > N - 160) {
+    // Lap Crossing Detection: il margine scala col numero di campioni del tracciato
+    const wrapMargin = Math.max(40, Math.round(N * 0.08));
+    if (!car.hasStartedFirstLap && bestIdx < wrapMargin && prevIdx > N - wrapMargin) {
       car.hasStartedFirstLap = true;
       car.lapStartTime = performance.now();
-    } else if (car.hasStartedFirstLap && bestIdx < 120 && prevIdx > N - 120) {
+    } else if (car.hasStartedFirstLap && bestIdx < wrapMargin && prevIdx > N - wrapMargin) {
       const now = performance.now();
       const lapTimeMs = now - car.lapStartTime;
       car.lapStartTime = now;
 
-      if (lapTimeMs > 4000) {
+      if (lapTimeMs > 4000 && !car.finished) {
         if (!car.bestLapTime || lapTimeMs < car.bestLapTime) {
           car.bestLapTime = lapTimeMs;
         }
@@ -1706,23 +2499,8 @@ const RaceEngine = {
         NetworkEngine.sendCheckpointPass(car.lap, car.sampleIndex, car.totalProgress);
       }
 
-      if ((this.mode === "race" || this.mode === "lan_race") && car.lap > this.totalLaps && !car.finished) {
-        car.finished = true;
-        let elapsed;
-        if (this.mode === "lan_race" && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
-          elapsed = Math.max(1000, Math.round(NetworkEngine.getServerTime() - this.raceStartTimeEpoch));
-        } else {
-          const nowMs = performance.now();
-          elapsed = this.raceStartEpoch ? (nowMs - this.raceStartEpoch) : (this.raceElapsedSeconds * 1000);
-        }
-        car.finishTime = Math.max(1000, Math.round(elapsed));
-
-        if (car.isPlayer) {
-          if (typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
-            NetworkEngine.sendFinishRace(car.finishTime, car.bestLapTime);
-          }
-          this.completeRaceSession();
-        }
+      if ((this.mode === "race" || this.mode === "lan_race" || this.mode === "championship" || this.mode === "lan_championship" || this.isLanChampionship) && car.lap > this.totalLaps && !car.finished) {
+        this.recordCarFinish(car);
       }
     }
 
@@ -1733,12 +2511,10 @@ const RaceEngine = {
     const normU = bestIdx / N;
     car.totalProgress = (car.hasStartedFirstLap ? car.lap - 1 : -1) + normU;
 
-    const relVec = new THREE.Vector3(
-      car.position.x - closestSample.point.x,
-      0,
-      car.position.z - closestSample.point.z,
-    );
-    const lateralDist = relVec.dot(closestSample.right);
+    // Distanza laterale dal centro pista (prodotto scalare senza allocare vettori)
+    const lateralDist =
+      (car.position.x - closestSample.point.x) * closestSample.right.x +
+      (car.position.z - closestSample.point.z) * closestSample.right.z;
     car.lateralDist = lateralDist;
     const maxAllowedLateral = this.trackData.barrierOffset
       ? this.trackData.barrierOffset - 1.1
@@ -1760,13 +2536,21 @@ const RaceEngine = {
     const fwdX = sinH, fwdZ = cosH;
     const rightX = cosH, rightZ = -sinH;
 
-    // World-space coordinates of the 4 vehicle corners
-    const corners = [
-      { x: car.position.x + fwdX * hFwd + rightX * hSide, z: car.position.z + fwdZ * hFwd + rightZ * hSide, isFront: true, isRight: true },
-      { x: car.position.x + fwdX * hFwd - rightX * hSide, z: car.position.z + fwdZ * hFwd - rightZ * hSide, isFront: true, isRight: false },
-      { x: car.position.x - fwdX * hFwd + rightX * hSide, z: car.position.z - fwdZ * hFwd + rightZ * hSide, isFront: false, isRight: true },
-      { x: car.position.x - fwdX * hFwd - rightX * hSide, z: car.position.z - fwdZ * hFwd - rightZ * hSide, isFront: false, isRight: false }
-    ];
+    // World-space coordinates of the 4 vehicle corners (buffer riutilizzato)
+    const corners = this._cornerScratch || (this._cornerScratch = [
+      { x: 0, z: 0, isFront: true, isRight: true },
+      { x: 0, z: 0, isFront: true, isRight: false },
+      { x: 0, z: 0, isFront: false, isRight: true },
+      { x: 0, z: 0, isFront: false, isRight: false },
+    ]);
+    corners[0].x = car.position.x + fwdX * hFwd + rightX * hSide;
+    corners[0].z = car.position.z + fwdZ * hFwd + rightZ * hSide;
+    corners[1].x = car.position.x + fwdX * hFwd - rightX * hSide;
+    corners[1].z = car.position.z + fwdZ * hFwd - rightZ * hSide;
+    corners[2].x = car.position.x - fwdX * hFwd + rightX * hSide;
+    corners[2].z = car.position.z - fwdZ * hFwd + rightZ * hSide;
+    corners[3].x = car.position.x - fwdX * hFwd - rightX * hSide;
+    corners[3].z = car.position.z - fwdZ * hFwd - rightZ * hSide;
 
     let maxRightLat = -Infinity;
     let minLeftLat = Infinity;
@@ -1791,6 +2575,7 @@ const RaceEngine = {
     const hitLeft = minLeftLat < -maxAllowedLateral;
 
     if (hitRight || hitLeft) {
+      car.touchingBarrier = true;
       const side = hitRight ? 1 : -1;
       const penetration = hitRight ? (maxRightLat - maxAllowedLateral) : (-maxAllowedLateral - minLeftLat);
       const contactCorner = hitRight ? maxRightCorner : minLeftCorner;
@@ -1885,21 +2670,24 @@ const RaceEngine = {
         }
       }
 
-      // Positional separation (prevent clipping outside wall)
-      const pushDist = penetration + 0.02;
+      // Positional separation (prevent clipping outside wall) with push buffer
+      const pushDist = penetration + 0.06;
       car.position.x += nWallX * pushDist;
       car.position.z += nWallZ * pushDist;
       car.lateralDist -= side * pushDist;
 
+      // Barrier alignment torque: deflects car back towards track rather than sticking nose-in or scraping parallel
+      const trackYaw = Math.atan2(closestSample.tangent.x, closestSample.tangent.z);
+      const inwardDeflect = car.isPlayer ? (-side * 0.10) : (-side * 0.22);
+      let angleErr = (trackYaw + inwardDeflect) - car.heading;
+      while (angleErr > Math.PI) angleErr -= Math.PI * 2;
+      while (angleErr < -Math.PI) angleErr += Math.PI * 2;
+      const alignRate = Math.abs(car.speed) > 7.0 ? 4.5 : 6.5;
+      car.heading += angleErr * dt * alignRate;
+
       // High-speed grinding / scraping along the barrier (penalizes wall riding)
       if (Math.abs(car.speed) > 7.0) {
         car.speed *= (1 - 0.52 * dt);
-
-        const trackYaw = Math.atan2(closestSample.tangent.x, closestSample.tangent.z);
-        let angleErr = trackYaw - car.heading;
-        while (angleErr > Math.PI) angleErr -= Math.PI * 2;
-        while (angleErr < -Math.PI) angleErr += Math.PI * 2;
-        car.heading += angleErr * dt * 4.2;
 
         if (car.isPlayer) {
           const now = performance.now();
@@ -1918,6 +2706,8 @@ const RaceEngine = {
           }
         }
       }
+    } else {
+      car.touchingBarrier = false;
     }
   },
 
@@ -1932,6 +2722,15 @@ const RaceEngine = {
     if (dx * dx + dz * dz > broadphaseDist * broadphaseDist) {
       return null;
     }
+
+    // Buffer riutilizzati: le collisioni girano ogni frame per molte coppie,
+    // quindi evitiamo di allocare centinaia di oggetti al secondo (GC/stutter).
+    const sc = (this._obbScratch || (this._obbScratch = {
+      result: { normal: { x: 0, z: 0 }, overlap: 0, contact: { x: 0, z: 0 } },
+      axes: [{ x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }],
+      ca: [{ x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }],
+      cb: [{ x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }],
+    }));
 
     // Car A axes and extents
     const sinA = Math.sin(a.heading);
@@ -1950,15 +2749,14 @@ const RaceEngine = {
     const bHside = b.halfWidth || 1.02;
 
     // Candidate separation axes (4 axes in 2D SAT)
-    const axes = [
-      { x: aFwdX, z: aFwdZ },
-      { x: aRightX, z: aRightZ },
-      { x: bFwdX, z: bFwdZ },
-      { x: bRightX, z: bRightZ }
-    ];
+    const axes = sc.axes;
+    axes[0].x = aFwdX; axes[0].z = aFwdZ;
+    axes[1].x = aRightX; axes[1].z = aRightZ;
+    axes[2].x = bFwdX; axes[2].z = bFwdZ;
+    axes[3].x = bRightX; axes[3].z = bRightZ;
 
     let minOverlap = Infinity;
-    let collisionNormal = null;
+    const colNormal = sc.result.normal;
 
     for (let i = 0; i < 4; i++) {
       const ax = axes[i].x;
@@ -1984,30 +2782,30 @@ const RaceEngine = {
       if (overlap < minOverlap) {
         minOverlap = overlap;
         const sign = distProj >= 0 ? 1 : -1;
-        collisionNormal = { x: ax * sign, z: az * sign };
+        colNormal.x = ax * sign;
+        colNormal.z = az * sign;
       }
     }
 
     // Boxes intersect! Compute contact centroid
-    const cornersA = [
-      { x: a.position.x + aFwdX * aHfwd + aRightX * aHside, z: a.position.z + aFwdZ * aHfwd + aRightZ * aHside },
-      { x: a.position.x + aFwdX * aHfwd - aRightX * aHside, z: a.position.z + aFwdZ * aHfwd - aRightZ * aHside },
-      { x: a.position.x - aFwdX * aHfwd + aRightX * aHside, z: a.position.z - aFwdZ * aHfwd + aRightZ * aHside },
-      { x: a.position.x - aFwdX * aHfwd - aRightX * aHside, z: a.position.z - aFwdZ * aHfwd - aRightZ * aHside }
-    ];
+    const cornersA = sc.ca;
+    cornersA[0].x = a.position.x + aFwdX * aHfwd + aRightX * aHside; cornersA[0].z = a.position.z + aFwdZ * aHfwd + aRightZ * aHside;
+    cornersA[1].x = a.position.x + aFwdX * aHfwd - aRightX * aHside; cornersA[1].z = a.position.z + aFwdZ * aHfwd - aRightZ * aHside;
+    cornersA[2].x = a.position.x - aFwdX * aHfwd + aRightX * aHside; cornersA[2].z = a.position.z - aFwdZ * aHfwd + aRightZ * aHside;
+    cornersA[3].x = a.position.x - aFwdX * aHfwd - aRightX * aHside; cornersA[3].z = a.position.z - aFwdZ * aHfwd - aRightZ * aHside;
 
-    const cornersB = [
-      { x: b.position.x + bFwdX * bHfwd + bRightX * bHside, z: b.position.z + bFwdZ * bHfwd + bRightZ * bHside },
-      { x: b.position.x + bFwdX * bHfwd - bRightX * bHside, z: b.position.z + bFwdZ * bHfwd - bRightZ * bHside },
-      { x: b.position.x - bFwdX * bHfwd + bRightX * bHside, z: b.position.z - bFwdZ * bHfwd + bRightZ * bHside },
-      { x: b.position.x - bFwdX * bHfwd - bRightX * bHside, z: b.position.z - bFwdZ * bHfwd - bRightZ * bHside }
-    ];
+    const cornersB = sc.cb;
+    cornersB[0].x = b.position.x + bFwdX * bHfwd + bRightX * bHside; cornersB[0].z = b.position.z + bFwdZ * bHfwd + bRightZ * bHside;
+    cornersB[1].x = b.position.x + bFwdX * bHfwd - bRightX * bHside; cornersB[1].z = b.position.z + bFwdZ * bHfwd - bRightZ * bHside;
+    cornersB[2].x = b.position.x - bFwdX * bHfwd + bRightX * bHside; cornersB[2].z = b.position.z - bFwdZ * bHfwd + bRightZ * bHside;
+    cornersB[3].x = b.position.x - bFwdX * bHfwd - bRightX * bHside; cornersB[3].z = b.position.z - bFwdZ * bHfwd - bRightZ * bHside;
 
     let contactX = 0;
     let contactZ = 0;
     let contactCount = 0;
 
-    for (let c of cornersA) {
+    for (let k = 0; k < 4; k++) {
+      const c = cornersA[k];
       const vX = c.x - b.position.x;
       const vZ = c.z - b.position.z;
       const pFwd = vX * bFwdX + vZ * bFwdZ;
@@ -2019,7 +2817,8 @@ const RaceEngine = {
       }
     }
 
-    for (let c of cornersB) {
+    for (let k = 0; k < 4; k++) {
+      const c = cornersB[k];
       const vX = c.x - a.position.x;
       const vZ = c.z - a.position.z;
       const pFwd = vX * aFwdX + vZ * aFwdZ;
@@ -2039,11 +2838,11 @@ const RaceEngine = {
       contactZ = (a.position.z + b.position.z) * 0.5;
     }
 
-    return {
-      normal: collisionNormal,
-      overlap: minOverlap,
-      contact: { x: contactX, z: contactZ }
-    };
+    const result = sc.result;
+    result.overlap = minOverlap;
+    result.contact.x = contactX;
+    result.contact.z = contactZ;
+    return result;
   },
 
   resolveCarCollisionPair(a, b, col) {
@@ -2084,6 +2883,21 @@ const RaceEngine = {
     const bCos = Math.cos(b.heading);
     const vBx = bSin * b.speed + bCos * (b.lateralVel || 0);
     const vBz = bCos * b.speed - bSin * (b.lateralVel || 0);
+
+    // Anti-ramming throttle cut cooldown: whenever cars overlap, immediately cut CPU throttle
+    const dxAB = b.position.x - a.position.x;
+    const dzAB = b.position.z - a.position.z;
+    const aIsBehind = (dxAB * aSin + dzAB * aCos) > 0.5;
+    const bIsBehind = (-dxAB * bSin - dzAB * bCos) > 0.5;
+
+    if (!a.isPlayer && !a.isRemotePlayer) {
+      a.collisionCooldownTimer = Math.max(a.collisionCooldownTimer || 0, aIsBehind ? 0.60 : 0.40);
+      if (aIsBehind && a.speed > 2.0) a.speed *= 0.94;
+    }
+    if (!b.isPlayer && !b.isRemotePlayer) {
+      b.collisionCooldownTimer = Math.max(b.collisionCooldownTimer || 0, bIsBehind ? 0.60 : 0.40);
+      if (bIsBehind && b.speed > 2.0) b.speed *= 0.94;
+    }
 
     // Rotational velocities at contact point: (omega * rZ, -omega * rX)
     const aOmega = a.angularVelocity || 0;
@@ -2163,6 +2977,7 @@ const RaceEngine = {
         b.impactRoll = THREE.MathUtils.clamp((b.impactRoll || 0) + (normal.x * bCos - normal.z * bSin) * 0.08, -0.15, 0.15);
         b.impactPitch = THREE.MathUtils.clamp((b.impactPitch || 0) + (normal.x * bSin + normal.z * bCos) * 0.08, -0.12, 0.12);
       }
+
 
       // Inelastic collision penalty for high-speed divebombing / rear-ending
       const relKmhInit = impactSpeed * 3.6;
@@ -2249,7 +3064,7 @@ const RaceEngine = {
   },
 
   manualGearShift(direction) {
-    if (!this.player || this.player.finished) return;
+    if (!this.player) return;
     const phys = this.player.carConfig.physics;
     const maxGears = (phys.gearRatios && phys.gearRatios.length) || 6;
 
@@ -2325,7 +3140,10 @@ const RaceEngine = {
     // 1. Retromarcia
     if (car.gear === "R") {
       const revPct = Math.min(1, speedAbs / 16);
-      const isReversingThrottle = this.keys && this.keys.down;
+      // Input per-car: il giocatore frena col tasto giù, l'IA segnala freno/retromarcia con throttle < 0
+      const isReversingThrottle = car.isPlayer
+        ? Boolean(this.keys && this.keys.down)
+        : (throttle < 0);
       const targetRPM = idleRPM + (isReversingThrottle ? revPct * (redlineRPM - idleRPM) * 0.7 + 1200 : 0);
       car.rpm = Math.round(THREE.MathUtils.clamp(targetRPM, idleRPM, redlineRPM));
       return;
@@ -2391,7 +3209,11 @@ const RaceEngine = {
               const isBelowPowerBand = currentMechRPM < powerBandFloor;
 
               // 2. Freno / Decelerazione in ingresso curva (richiesta di freno motore da gara)
-              const isDecelerating = throttle === 0 || (this.keys && this.keys.down);
+              // Il giocatore usa il tasto freno; l'IA segnala la frenata con throttle < 0.
+              const brakePedal = car.isPlayer
+                ? Boolean(this.keys && this.keys.down)
+                : (throttle < 0);
+              const isDecelerating = throttle === 0 || brakePedal;
               const wantsEngineBraking = isDecelerating && lowerGearRPM < redlineRPM * 0.82;
 
               // 3. Kickdown: acceleratore a fondo a medio regime per sorpasso
@@ -2449,11 +3271,11 @@ const RaceEngine = {
     const rearX = car.position.x - sinH * wheelbaseHalf;
     const rearZ = car.position.z - cosH * wheelbaseHalf;
 
-    const frontSurf = this.getTrackElevationAndNormal(frontX, frontZ, car.sampleIndex);
-    const rearSurf = this.getTrackElevationAndNormal(rearX, rearZ, car.sampleIndex);
+    const frontY = this.getTrackSurfaceY(frontX, frontZ, car.sampleIndex);
+    const rearY = this.getTrackSurfaceY(rearX, rearZ, car.sampleIndex);
 
     // Inclinazione longitudinale (pitch): salita muso in su (rotazione X negativa), discesa muso in giù
-    const deltaY_pitch = frontSurf.y - rearSurf.y;
+    const deltaY_pitch = frontY - rearY;
     const targetTrackPitch = -Math.atan2(deltaY_pitch, wheelbaseHalf * 2);
 
     // Inclinazione trasversale (banking / roll): lato destro più alto = roll verso sinistra
@@ -2462,10 +3284,10 @@ const RaceEngine = {
     const leftX_pos = car.position.x - cosH * trackWidthHalf;
     const leftZ_pos = car.position.z + sinH * trackWidthHalf;
 
-    const rightSurf = this.getTrackElevationAndNormal(rightX_pos, rightZ_pos, car.sampleIndex);
-    const leftSurf = this.getTrackElevationAndNormal(leftX_pos, leftZ_pos, car.sampleIndex);
+    const rightY = this.getTrackSurfaceY(rightX_pos, rightZ_pos, car.sampleIndex);
+    const leftY = this.getTrackSurfaceY(leftX_pos, leftZ_pos, car.sampleIndex);
 
-    const deltaY_roll = rightSurf.y - leftSurf.y;
+    const deltaY_roll = rightY - leftY;
     const targetTrackRoll = Math.atan2(deltaY_roll, trackWidthHalf * 2);
 
     // Smoothing dell'inclinazione pista per evitare scatti poligonali
@@ -2602,57 +3424,88 @@ const RaceEngine = {
   },
 
   updateCamera(dt) {
-    if (!this.player) return;
+    if (!this.player || !GameApp.camera) return;
     const car = this.player;
-    const forward = new THREE.Vector3(
-      Math.sin(car.heading),
-      0,
-      Math.cos(car.heading),
-    );
+
+    // Inizializza e smorza la rotazione orizzontale della telecamera (Smooth Yaw Lag stile Gran Turismo)
+    if (typeof this.camHeading !== "number" || isNaN(this.camHeading)) {
+      this.camHeading = car.heading;
+    }
+    let headingDiff = car.heading - this.camHeading;
+    while (headingDiff < -Math.PI) headingDiff += Math.PI * 2;
+    while (headingDiff > Math.PI) headingDiff -= Math.PI * 2;
+
+    // Asseconda dolcemente il drift in curva (anticipa l'uscita di curva)
+    const driftBias = (car.driftAngle || 0) * 0.28;
+    this.camHeading += (headingDiff + driftBias) * Math.min(1, dt * 8.5);
+
+    const forward = this._camForward || (this._camForward = new THREE.Vector3());
+    forward.set(Math.sin(this.camHeading), 0, Math.cos(this.camHeading));
+
+    const speedKmh = Math.abs(car.speed || 0) * 3.6;
+    const speedRatio = Math.min(1, speedKmh / 220);
 
     if (this.cameraMode === 1) {
-      // Hood camera ancorata all'orientamento 3D del muso
-      const hoodPos = car.mesh.localToWorld(new THREE.Vector3(0, 1.15, 0.65));
-      const hoodLook = car.mesh.localToWorld(new THREE.Vector3(0, 0.85, 24));
+      // 1. VISUALE COFANO / INTERNA (HOOD / COCKPIT CAM)
+      const carId = (car.carConfig && car.carConfig.id) || "hatchback";
+      const hoodY = carId === "hypercar" ? 0.95 : carId === "muscle" ? 1.15 : 1.25;
+      const hoodZ = carId === "hypercar" ? 0.85 : 0.70;
+
+      const hoodPos = this._camHoodPos || (this._camHoodPos = new THREE.Vector3());
+      const hoodLook = this._camHoodLook || (this._camHoodLook = new THREE.Vector3());
+      hoodPos.set(0, hoodY, hoodZ);
+      car.mesh.localToWorld(hoodPos);
+      hoodLook.set(0, hoodY * 0.85, 26);
+      car.mesh.localToWorld(hoodLook);
 
       GameApp.camera.position.copy(hoodPos);
       GameApp.camera.lookAt(hoodLook);
-      const hoodSpeed = Math.min(1, Math.abs(car.speed) / 115);
-      GameApp.camera.fov = THREE.MathUtils.lerp(
-        GameApp.camera.fov,
-        60 + hoodSpeed * 25,
-        dt * 8,
-      );
+
+      const targetFov = 62 + speedRatio * 18;
+      GameApp.camera.fov = THREE.MathUtils.lerp(GameApp.camera.fov, targetFov, Math.min(1, dt * 7));
       GameApp.camera.updateProjectionMatrix();
     } else {
-      const distBack = this.cameraMode === 2 ? 10.5 : 7.4;
-      const heightUp = this.cameraMode === 2 ? 4.2 : 2.95;
+      // 2. VISUALE TERZA PERSONA (GT DINAMICA) & VISUALE LONTANA
+      const isFar = this.cameraMode === 2;
+      
+      // Calcolo distanze e altezze dinamiche basate sulla velocità
+      const baseDist = isFar ? 11.6 : 8.4;
+      const distBack = baseDist + speedRatio * (isFar ? 0.8 : 0.6);
+
+      const baseHeight = isFar ? 3.9 : 2.75;
+      const heightUp = baseHeight - speedRatio * 0.2; // Si abbassa lievemente alle alte velocità per accentuare la scia
+
+      const lookAheadDist = isFar ? 20.0 : 16.5;
+      const lookHeight = isFar ? 1.6 : 1.45;
 
       const pitch = car.trackPitch || 0;
       const slopeDeltaY = -distBack * Math.sin(-pitch);
-      const lookDeltaY = 5.5 * Math.sin(-pitch);
+      const lookDeltaY = lookAheadDist * Math.sin(-pitch);
 
-      const desiredPos = car.position
-        .clone()
-        .addScaledVector(forward, -distBack);
+      // Posizione desiderata camera
+      const desiredPos = this._camDesiredPos || (this._camDesiredPos = new THREE.Vector3());
+      desiredPos.copy(car.position).addScaledVector(forward, -distBack);
       desiredPos.y += heightUp + slopeDeltaY;
 
-      const desiredLook = car.position
-        .clone()
-        .addScaledVector(forward, 5.5);
-      desiredLook.y += 1.0 + lookDeltaY;
+      // Target verso cui guarda: punto in avanti lungo la traiettoria ad altezza occhi
+      const desiredLook = this._camDesiredLook || (this._camDesiredLook = new THREE.Vector3());
+      desiredLook.copy(car.position).addScaledVector(forward, lookAheadDist);
+      desiredLook.y += lookHeight + lookDeltaY;
 
-      this.camPos.lerp(desiredPos, Math.min(1, dt * 8.5));
-      this.camLook.lerp(desiredLook, Math.min(1, dt * 12));
+      // Interpolazione fluida della posizione e del punto di mira
+      this.camPos.lerp(desiredPos, Math.min(1, dt * 9.5));
+      this.camLook.lerp(desiredLook, Math.min(1, dt * 12.0));
 
       GameApp.camera.position.copy(this.camPos);
       GameApp.camera.lookAt(this.camLook);
 
-      const speedRatio = Math.min(1, Math.abs(car.speed) / 115);
+      // FOV dinamico che si apre all'aumentare della velocità e durante lo Slingshot Boost
+      const boostFov = car.isSlingshotBoosting ? 5.2 : ((car.draftIntensity || 0) * 2.0);
+      const targetFov = (isFar ? 58 : 60) + speedRatio * 16 + boostFov;
       GameApp.camera.fov = THREE.MathUtils.lerp(
         GameApp.camera.fov,
-        60 + speedRatio * 25,
-        dt * 5,
+        targetFov,
+        Math.min(1, dt * 6.0),
       );
       GameApp.camera.updateProjectionMatrix();
     }
@@ -2662,23 +3515,24 @@ const RaceEngine = {
       this.cameraTrauma = Math.max(0, this.cameraTrauma - dt * 2.8);
       const shakePower = Math.pow(this.cameraTrauma, 2);
       const t = performance.now() * 0.001;
-      const shakeX = (Math.sin(t * 43) * 0.7 + Math.sin(t * 89) * 0.3) * shakePower * 0.42;
-      const shakeY = (Math.cos(t * 51) * 0.7 + Math.cos(t * 97) * 0.3) * shakePower * 0.32;
-      const shakeZ = Math.sin(t * 61) * shakePower * 0.25;
+      const shakeX = (Math.sin(t * 43) * 0.7 + Math.sin(t * 89) * 0.3) * shakePower * 0.38;
+      const shakeY = (Math.cos(t * 51) * 0.7 + Math.cos(t * 97) * 0.3) * shakePower * 0.28;
+      const shakeZ = Math.sin(t * 61) * shakePower * 0.22;
 
       GameApp.camera.position.x += shakeX;
       GameApp.camera.position.y += shakeY;
       GameApp.camera.position.z += shakeZ;
-      GameApp.camera.rotation.z += shakeX * 0.05;
+      GameApp.camera.rotation.z += shakeX * 0.04;
     }
   },
 
   cycleCamera() {
     this.cameraMode = (this.cameraMode + 1) % 3;
-    const labels = ["TERZA PERSONA", "COFANO / INTERNA", "VISUALE LONTANA"];
-    document.getElementById("hud-cam-mode").textContent =
-      labels[this.cameraMode];
+    const labels = ["TERZA PERSONA (GT)", "COFANO / INTERNA", "VISUALE LONTANA"];
+    const modeEl = document.getElementById("hud-cam-mode");
+    if (modeEl) modeEl.textContent = labels[this.cameraMode];
     AudioEngine.playUIClick();
+    UI.showToast(`Visuale: ${labels[this.cameraMode]}`, "fa-video");
   },
 
   resetPlayerToTrack() {
@@ -2686,21 +3540,47 @@ const RaceEngine = {
     const s = this.trackData.samples[this.player.sampleIndex];
     this.player.position.copy(s.point);
     this.player.heading = Math.atan2(s.tangent.x, s.tangent.z);
+    this.camHeading = this.player.heading;
     this.player.speed = 0;
     this.player.driftAngle = 0;
     AudioEngine.playUIClick();
     UI.showToast("Vettura riposizionata al centro della pista", "fa-rotate");
   },
 
-  getStandings() {
-    return [...this.allRacers].sort((a, b) => {
-      if (a.finished && b.finished) return a.finishTime - b.finishTime;
+  // Classifica completa (allocazione + sort). Memorizzata in cache per qualche
+  // frame così l'HUD non la ricalcola ad ogni frame; `force = true` la ricalcola
+  // sempre (es. a fine gara per un ordine d'arrivo definitivo).
+  getStandings(force = false) {
+    if (
+      !force &&
+      this._standingsCache &&
+      this._standingsCacheRacers === this.allRacers &&
+      this.frameCounter - (this._standingsCacheFrame || 0) < 6
+    ) {
+      return this._standingsCache;
+    }
+    const sorted = [...this.allRacers].sort((a, b) => {
+      if (a.finished && b.finished) {
+        if (a.finishTime && b.finishTime && a.finishTime !== b.finishTime) {
+          return a.finishTime - b.finishTime;
+        }
+        const idxA = this.officialFinishOrder ? this.officialFinishOrder.indexOf(a) : -1;
+        const idxB = this.officialFinishOrder ? this.officialFinishOrder.indexOf(b) : -1;
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return 0;
+      }
       if (a.finished) return -1;
       if (b.finished) return 1;
       const progA = typeof a.totalProgress === "number" && !isNaN(a.totalProgress) ? a.totalProgress : 0;
       const progB = typeof b.totalProgress === "number" && !isNaN(b.totalProgress) ? b.totalProgress : 0;
       return progB - progA;
     });
+    this._standingsCache = sorted;
+    this._standingsCacheRacers = this.allRacers;
+    this._standingsCacheFrame = this.frameCounter;
+    return sorted;
   },
 
   updateHUD(nowMs) {
@@ -2741,11 +3621,65 @@ const RaceEngine = {
     if (driftDeg >= 10 && kmh > 40) driftBanner.classList.remove("hidden");
     else driftBanner.classList.add("hidden");
 
+    // Banner centrale dinamico di scia aerodinamica e Slingshot Boost
+    const draftBanner = document.getElementById("hud-draft-banner");
+    const draftText = document.getElementById("hud-draft-text");
+    if (draftBanner) {
+      if (car.isSlingshotBoosting) {
+        draftBanner.classList.remove("hidden");
+        draftBanner.className =
+          "mt-2 px-5 py-1.5 rounded-full bg-gradient-to-r from-amber-400 via-cyan-400 to-blue-500 text-slate-950 font-racing font-black text-xs sm:text-sm tracking-widest uppercase shadow-xl shadow-cyan-400/50 flex items-center justify-center gap-1.5 transition-all animate-pulse";
+        if (draftText) {
+          const timeLeft = (car.slingshotBoostTimer || 0).toFixed(1);
+          draftText.textContent = `🚀 SLINGSHOT BOOST! (+24 KM/H • ${timeLeft}s)`;
+        }
+      } else if (car.inDraft && (car.draftChargePct || 0) >= 0.20 && kmh > 60) {
+        draftBanner.classList.remove("hidden");
+        draftBanner.className =
+          "mt-2 px-4 py-1 rounded-full bg-cyan-500/20 border border-cyan-400/60 text-cyan-300 font-racing font-bold text-xs tracking-widest uppercase shadow-lg shadow-cyan-500/30 flex items-center justify-center gap-1.5 transition-all";
+        if (draftText) {
+          const pct = Math.round((car.draftChargePct || 0) * 100);
+          const targetStr = car.draftTargetName ? `DIETRO A ${car.draftTargetName} ` : "";
+          draftText.textContent = `CARICAMENTO SCIA ${targetStr}(${pct}%)`;
+        }
+      } else {
+        draftBanner.classList.add("hidden");
+      }
+    }
+
+    // Banner centrale Bandiera a Scacchi e Arrivo al Traguardo
+    const finishBanner = document.getElementById("hud-finish-banner");
+    const finishBannerText = document.getElementById("hud-finish-banner-text");
+    if (finishBanner && finishBannerText) {
+      if (car.finished) {
+        finishBanner.classList.remove("hidden");
+        const isLan = (this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship);
+        const myRank = car.finishRank || (this.officialFinishOrder.indexOf(car) + 1) || 1;
+        const myTimeStr = UI.formatLapTime(car.finishTime);
+        const hasUnfinishedHumans = isLan && this.allRacers.some((r) => r.isRemotePlayer && !r.finished);
+        if (hasUnfinishedHumans) {
+          finishBannerText.innerHTML = `P${myRank} (${myTimeStr}) <span class="text-amber-400 text-xs ml-2 animate-pulse">IN ATTESA DELL'AVVERSARIO LAN...</span>`;
+        } else if (!this.allRacers.every((r) => r.finished)) {
+          finishBannerText.innerHTML = `HAI TAGLIATO IN P${myRank}! (${myTimeStr}) <span class="text-slate-400 text-xs ml-2">ARRIVO CONCORRENTI...</span>`;
+        } else {
+          finishBannerText.textContent = `GARA CONCLUSA! P${myRank} (${myTimeStr})`;
+        }
+      } else if (this.chequeredFlagActive) {
+        finishBanner.classList.remove("hidden");
+        const winner = this.officialFinishOrder[0];
+        const winnerName = winner ? (winner.isPlayer ? "TU" : (winner.driverName || "LEADER")) : "LEADER";
+        finishBannerText.textContent = `🏁 BANDIERA A SCACCHI • P1: ${winnerName}!`;
+      } else {
+        finishBanner.classList.add("hidden");
+      }
+    }
+
     // Update Live FIA Sector, Corner Name & DRS Status Banner
     const curU = car.sampleIndex / this.trackData.samples.length;
     const sectorBadge = document.getElementById("hud-sector-badge");
     const cornerEl = document.getElementById("hud-corner-name");
     const drsBadge = document.getElementById("hud-drs-badge");
+    const draftBadge = document.getElementById("hud-draft-badge");
 
     if (sectorBadge && cornerEl && drsBadge) {
       if (curU < 0.333) {
@@ -2783,10 +3717,31 @@ const RaceEngine = {
         drsBadge.className =
           "px-2.5 py-0.5 rounded-full text-[10px] font-racing font-bold bg-slate-800 text-slate-500 border border-white/10";
       }
+
+      if (draftBadge) {
+        if (car.isSlingshotBoosting) {
+          draftBadge.classList.remove("hidden");
+          const timeLeft = (car.slingshotBoostTimer || 0).toFixed(1);
+          draftBadge.textContent = `🚀 SUPER SCIA (${timeLeft}s)`;
+          draftBadge.className =
+            "px-2.5 py-0.5 rounded-full text-[10px] font-racing font-black bg-gradient-to-r from-amber-400 to-yellow-300 text-slate-950 shadow-lg shadow-amber-400/60 animate-pulse";
+        } else if (car.inDraft && (car.draftChargePct || 0) > 0.08) {
+          draftBadge.classList.remove("hidden");
+          const pct = Math.round((car.draftChargePct || 0) * 100);
+          draftBadge.textContent = `CARICA SCIA ${pct}%`;
+          draftBadge.className =
+            "px-2 py-0.5 rounded-full text-[9px] font-racing font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-400/40";
+        } else {
+          draftBadge.classList.add("hidden");
+        }
+      }
     }
 
+    const isCompetitive =
+      this.mode === "race" || this.mode === "lan_race" || this.mode === "championship" || this.mode === "lan_championship" || this.isLanChampionship;
+
     const displayLap =
-      (this.mode === "race" || this.mode === "lan_race")
+      isCompetitive
         ? Math.min(this.totalLaps, Math.max(1, car.lap))
         : Math.max(1, car.lap);
     document.getElementById("hud-lap").textContent = displayLap;
@@ -2800,7 +3755,7 @@ const RaceEngine = {
       );
     }
 
-    if (this.mode === "race" || this.mode === "lan_race") {
+    if (isCompetitive) {
       const standings = this.getStandings();
       const myId = (typeof NetworkEngine !== "undefined" && (NetworkEngine.myPlayerId || NetworkEngine.myId)) || null;
       const myIndex = standings.findIndex((r) => r.isPlayer || (myId && r.id === myId));
@@ -2811,7 +3766,11 @@ const RaceEngine = {
       const leader = standings[0] || car;
       const gapEl = document.getElementById("hud-gap");
       if (gapEl) {
-        if (pos === 1) {
+        if (car.finished) {
+          const myRank = car.finishRank || (this.officialFinishOrder.indexOf(car) + 1) || pos;
+          gapEl.textContent = `P${myRank} FIN`;
+          gapEl.className = "font-racing font-bold text-emerald-400";
+        } else if (pos === 1) {
           gapEl.textContent = "LEADER";
           gapEl.className = "font-racing font-bold text-emerald-400";
         } else {
@@ -2861,6 +3820,12 @@ const RaceEngine = {
       if (this.mode === "lan_race") {
         diffTagEl.textContent = `LAN ONLINE (${this.allRacers.length}P)`;
         diffTagEl.className = "px-1.5 py-0.2 rounded text-[8px] font-racing font-bold bg-emerald-500/30 text-emerald-300 border border-emerald-400/30";
+      } else if ((this.mode === "championship" || this.mode === "lan_championship" || this.isLanChampionship) && typeof ChampionshipEngine !== "undefined" && ChampionshipEngine.state) {
+        const stageNum = ChampionshipEngine.state.currentStageIndex + 1;
+        const totalS = ChampionshipEngine.state.totalStages;
+        const isLan = this.isLanChampionship || this.mode === "lan_championship";
+        diffTagEl.textContent = `${isLan ? "GP LAN" : "GP"} TAPPA ${stageNum}/${totalS}`;
+        diffTagEl.className = "px-1.5 py-0.2 rounded text-[8px] font-racing font-bold bg-amber-400 text-slate-950 shadow-sm";
       } else {
         const diffConfig = this.getDifficultyConfig();
         diffTagEl.textContent = `${diffConfig.name.toUpperCase()} (x${diffConfig.multiplier.toFixed(1)})`;
@@ -2875,7 +3840,9 @@ const RaceEngine = {
       .map((r, idx) => {
         const rank = idx + 1;
         let gapStr = "LEADER";
-        if (idx > 0 && leader) {
+        if (idx === 0) {
+          gapStr = r.finished ? "VINCITORE" : "LEADER";
+        } else if (leader) {
           if (r.finished && leader.finished) {
             const sec = Math.max(0, (r.finishTime - leader.finishTime) / 1000);
             gapStr = `+${sec.toFixed(1)}s`;
@@ -2906,22 +3873,32 @@ const RaceEngine = {
           : "bg-slate-900/75 text-slate-300";
 
         let badgeTag = "";
-        if (this.mode === "lan_race") {
+        if (r.finished) {
+          badgeTag = '<span class="px-1 rounded text-[8px] bg-emerald-500/30 text-emerald-300 font-bold border border-emerald-400/40">FIN</span>';
+        } else if (this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) {
           const isHost = (typeof NetworkEngine !== "undefined" && NetworkEngine.hostId && r.id === NetworkEngine.hostId);
           if (isMe) {
             badgeTag = '<span class="px-1 rounded text-[8px] bg-cyan-500/30 text-cyan-200">TU</span>';
           } else if (isHost) {
             badgeTag = '<span class="px-1 rounded text-[8px] bg-amber-400/30 text-amber-200 font-bold">HOST</span>';
+          } else if (r.isAi) {
+            const aiTag = r.aiStatusTag || "IA";
+            badgeTag = `<span class="px-1 rounded text-[8px] bg-slate-800 text-slate-300 border border-white/10">${aiTag}</span>`;
           }
         } else {
           let badgeStyle = "bg-cyan-500/30 text-cyan-200";
           if (r.aiStatusTag === "LUNGO!") badgeStyle = "bg-rose-500/40 text-rose-200";
           else if (r.aiStatusTag === "DRS") badgeStyle = "bg-emerald-500/30 text-emerald-200 font-bold";
           else if (r.aiStatusTag === "SCIA") badgeStyle = "bg-amber-400/30 text-amber-200 font-bold";
+          else if (r.aiStatusTag === "SLINGSHOT") badgeStyle = "bg-fuchsia-500/40 text-fuchsia-200 font-bold animate-pulse";
           else if (r.aiStatusTag === "SORPASSO") badgeStyle = "bg-purple-500/40 text-purple-200 font-bold animate-pulse";
           else if (r.aiStatusTag === "DIFESA") badgeStyle = "bg-blue-500/40 text-blue-200 font-bold";
+          else if (r.aiStatusTag === "ATTACCO") badgeStyle = "bg-red-500/30 text-red-200 font-bold";
+          else if (r.aiStatusTag === "TATTICA") badgeStyle = "bg-sky-500/30 text-sky-200 font-bold";
+          else if (r.aiStatusTag === "GESTIONE") badgeStyle = "bg-teal-500/30 text-teal-200 font-bold";
           else if (r.aiStatusTag === "RECUPERO!") badgeStyle = "bg-orange-500/40 text-orange-200";
           else if (r.aiStatusTag === "RIENTRO!") badgeStyle = "bg-amber-500/40 text-amber-200";
+          else if (r.aiStatusTag === "MANOVRA!") badgeStyle = "bg-amber-500/40 text-amber-200 font-bold animate-pulse";
 
           badgeTag =
             !r.isPlayer && r.aiStatusTag
@@ -3116,6 +4093,15 @@ const RaceEngine = {
 
   restartSession() {
     AudioEngine.playUIClick();
+    // Le gare LAN non possono essere riavviate localmente: la partenza è
+    // orchestrata dal server (semaforo sincronizzato / stanza). Riportiamo
+    // quindi il giocatore alla lobby multiplayer invece di avviare per errore
+    // una gara singola fuori sincrono (comportamento coerente col rematch LAN).
+    if (this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) {
+      this.quitToMenu();
+      UI.switchTab("multiplayer");
+      return;
+    }
     this.startSession(this.trackConfig.id, this.mode);
   },
 
@@ -3129,20 +4115,129 @@ const RaceEngine = {
     document.getElementById("race-hud").classList.remove("flex");
     document.getElementById("modal-pause").classList.add("hidden");
     document.getElementById("modal-results").classList.add("hidden");
+    const mStage = document.getElementById("modal-championship-stage");
+    if (mStage) {
+      mStage.classList.add("hidden");
+      mStage.classList.remove("flex");
+    }
+    const mFinale = document.getElementById("modal-championship-finale");
+    if (mFinale) {
+      mFinale.classList.add("hidden");
+      mFinale.classList.remove("flex");
+    }
 
     document.getElementById("menu-header").classList.remove("hidden");
     document.getElementById("menu-main").classList.remove("hidden");
 
     UI.updateHeaderStats();
-    UI.switchTab(UI.currentTab);
+    UI.switchTab(UI.currentTab || "race");
+  },
+
+  // Nasconde le modali di tappa/finale campionato quando una nuova gara viene avviata
+  // (es. l'Host avvia la tappa successiva mentre gli ospiti sono sulla schermata di riepilogo).
+  hideChampionshipModals() {
+    ["modal-championship-stage", "modal-championship-finale"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.classList.add("hidden");
+        el.classList.remove("flex");
+      }
+    });
+  },
+
+  recordCarFinish(car, explicitFinishTime = null) {
+    if (!car || car.finished) return;
+    car.finished = true;
+
+    let elapsed;
+    if (explicitFinishTime && explicitFinishTime > 0) {
+      elapsed = explicitFinishTime;
+    } else if ((this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship) && this.raceStartTimeEpoch && typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+      elapsed = Math.max(1000, Math.round(NetworkEngine.getServerTime() - this.raceStartTimeEpoch));
+    } else {
+      const nowMs = performance.now();
+      elapsed = this.raceStartEpoch ? (nowMs - this.raceStartEpoch) : (this.raceElapsedSeconds * 1000);
+    }
+    car.finishTime = Math.max(1000, Math.round(elapsed));
+
+    if (!this.officialFinishOrder.some((r) => r.id === car.id)) {
+      this.officialFinishOrder.push(car);
+    }
+    car.finishRank = this.officialFinishOrder.length;
+
+    // Se è la prima vettura assoluta, attiva la bandiera a scacchi ufficiale
+    if (!this.chequeredFlagActive) {
+      this.chequeredFlagActive = true;
+      this.chequeredFlagTimer = 0;
+      const winnerName = car.isPlayer ? "TU" : (car.driverName || "Leader");
+      if (typeof UI !== "undefined" && UI.showToast) {
+        UI.showToast(`🏁 BANDIERA A SCACCHI! P1: ${winnerName}`, "fa-flag-checkered");
+      }
+      if (typeof AudioEngine !== "undefined" && AudioEngine.playTone) {
+        AudioEngine.playTone(660, 0.22, "sine", 0.35);
+        setTimeout(() => {
+          if (typeof AudioEngine !== "undefined" && AudioEngine.playTone) {
+            AudioEngine.playTone(880, 0.40, "triangle", 0.4);
+          }
+        }, 180);
+      }
+    }
+
+    if (car.isPlayer) {
+      if (typeof NetworkEngine !== "undefined" && NetworkEngine.isConnected) {
+        NetworkEngine.sendFinishRace(car.finishTime, car.bestLapTime);
+      }
+      if (typeof UI !== "undefined" && UI.showToast) {
+        UI.showToast(`🏁 HAI TAGLIATO IL TRAGUARDO IN P${car.finishRank}! (${UI.formatLapTime(car.finishTime)})`, "fa-flag-checkered");
+      }
+      if (typeof AudioEngine !== "undefined" && AudioEngine.playTone) {
+        AudioEngine.playTone(523.25, 0.15, "triangle", 0.3);
+      }
+      // In LAN concedi fino a 30 secondi agli avversari umani (timeout ritardatari),
+      // in single player 7.0 secondi di crociera libera prima della chiusura.
+      const isLan = (this.mode === "lan_race" || this.mode === "lan_championship" || this.isLanChampionship);
+      this.postRaceCooldownTimer = isLan ? 30.0 : 7.0;
+    }
+  },
+
+  extrapolateUnfinishedRacers() {
+    if (!this.allRacers || this.allRacers.length === 0) return;
+    const trackLen = (this.trackData && this.trackData.totalLength) || 1200;
+    const baseTime = this.officialFinishOrder.length > 0
+      ? this.officialFinishOrder[this.officialFinishOrder.length - 1].finishTime
+      : (this.raceElapsedSeconds * 1000);
+
+    // Identifica tutte le vetture che non hanno ancora tagliato la linea
+    const unfinished = this.allRacers.filter((r) => !r.finished);
+    // Ordina per progresso decrescente sul circuito (chi è più avanti conclude prima)
+    unfinished.sort((a, b) => (b.totalProgress || 0) - (a.totalProgress || 0));
+
+    let progressiveTime = Math.max(1000, baseTime);
+    for (let r of unfinished) {
+      const remainingProgress = Math.max(0.02, this.totalLaps - (r.totalProgress || 0));
+      const estSpeed = Math.max(22, Math.abs(r.speed || 30));
+      const estSeconds = (remainingProgress * trackLen) / estSpeed;
+      progressiveTime += Math.max(500, Math.round(estSeconds * 1000));
+
+      r.finished = true;
+      r.finishTime = progressiveTime;
+      if (!this.officialFinishOrder.some((x) => x.id === r.id)) {
+        this.officialFinishOrder.push(r);
+      }
+      r.finishRank = this.officialFinishOrder.length;
+    }
   },
 
   completeRaceSession() {
     this.isFinished = true;
+    this.raceSessionClosing = true;
     AudioEngine.setDrivingAudioActive(false);
     AudioEngine.playCashPurchase();
 
-    const standings = this.getStandings();
+    // Assicura che tutte le vetture abbiano registrato o estrapolato tempo e traguardo
+    this.extrapolateUnfinishedRacers();
+
+    const standings = this.getStandings(true);
     const playerPos = standings.findIndex((r) => r.isPlayer) + 1;
 
     // Calcolo crediti e record profilo con moltiplicatore di difficoltà
@@ -3213,12 +4308,23 @@ const RaceEngine = {
     // Ricerca del giro più veloce assoluto in gara
     let sessionFastestLap = Infinity;
     let sessionFastestDriver = null;
+    let sessionFastestDriverId = null;
     standings.forEach((r) => {
       if (r.bestLapTime && r.bestLapTime > 4000 && r.bestLapTime < sessionFastestLap) {
         sessionFastestLap = r.bestLapTime;
         sessionFastestDriver = r.driverName;
+        sessionFastestDriverId = r.id;
       }
     });
+
+    // Se la sessione è in modalità CAMPIONATO (singolo o LAN), registra i punti FIA e apri la schermata di tappa
+    if ((this.mode === "championship" || this.mode === "lan_championship" || this.isLanChampionship) && typeof ChampionshipEngine !== "undefined") {
+      const stageSummary = ChampionshipEngine.recordStageResults(standings, sessionFastestDriverId);
+      if (stageSummary && typeof UI !== "undefined") {
+        UI.showChampionshipStageModal(stageSummary);
+        return;
+      }
+    }
 
     // 4 Schede riassuntive
     const prizeEl = document.getElementById("res-prize");
