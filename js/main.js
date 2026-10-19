@@ -39,17 +39,21 @@ const GameApp = {
       2200,
     );
 
+    // Nota: con EffectComposer (Three.js r128) il render avviene sempre su
+    // WebGLRenderTarget interni senza MSAA, quindi `antialias: true` non
+    // smussa nulla ma alloca un framebuffer multisample del default framebuffer:
+    // costo GPU/memoria a resa invariata. Disattivato insieme a stencil/alpha
+    // inutilizzati per alleggerire il contesto WebGL.
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: false,
+      stencil: false,
+      alpha: false,
       powerPreference: "high-performance",
     });
+    // Nota: tone mapping, esposizione, outputEncoding, shadow map e pixel
+    // ratio sono configurati da GraphicsEngine.init (unico proprietario),
+    // che viene invocato subito dopo e sovrascriveva questi valori duplicati.
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
-    this.renderer.outputEncoding = THREE.sRGBEncoding;
     container.appendChild(this.renderer.domElement);
 
     this.clock = new THREE.Clock();
@@ -99,28 +103,160 @@ const GameApp = {
     this.animate();
   },
 
-  clearScene() {
-    while (this.scene.children.length > 0) {
-      this.scene.remove(this.scene.children[0]);
+  clearScene(preserve) {
+    // Libera la memoria GPU di tutta la scena prima di rimuoverla: la sola
+    // scene.remove() lasciava geometrie, materiali e texture allocati nel
+    // renderer, causando un leak ad ogni transizione showroom ↔ gara.
+    const scene = this.scene;
+    const keep = typeof preserve === "function" ? preserve : () => false;
+    const mapSlots = [
+      "map",
+      "normalMap",
+      "roughnessMap",
+      "metalnessMap",
+      "emissiveMap",
+      "envMap",
+      "alphaMap",
+      "aoMap",
+      "lightMap",
+      "bumpMap",
+      "displacementMap",
+    ];
+
+    // Risorse globali condivise e riutilizzate tra scene diverse: non vanno
+    // mai liberate qui, perché i cache che le possiedono (ProceduralAssets,
+    // loadedModelsCache, proceduralTextures) non le ricreano. Sono invece
+    // liberate dai rispettivi proprietari quando vengono sostituite
+    // (es. buildAtmosphericSkyAndIBL / initDriftSparkPool).
+    const persistent = new Set();
+    const collectSlots = (material) => {
+      if (!material) return;
+      mapSlots.forEach((slot) => {
+        if (material[slot]) persistent.add(material[slot]);
+      });
+    };
+    const registerResources = (root) => {
+      if (!root || typeof root.traverse !== "function") return;
+      root.traverse((node) => {
+        if (node.geometry) persistent.add(node.geometry);
+        if (Array.isArray(node.material)) {
+          node.material.forEach((material) => {
+            persistent.add(material);
+            collectSlots(material);
+          });
+        } else if (node.material) {
+          persistent.add(node.material);
+          collectSlots(node.material);
+        }
+      });
+    };
+
+    if (typeof GraphicsEngine !== "undefined") {
+      registerResources(GraphicsEngine.skyMesh);
+      registerResources(GraphicsEngine.sparkGroup);
+      Object.keys(GraphicsEngine.loadedModelsCache || {}).forEach((key) =>
+        registerResources(GraphicsEngine.loadedModelsCache[key]),
+      );
+      Object.keys(GraphicsEngine.proceduralTextures || {}).forEach((key) => {
+        if (GraphicsEngine.proceduralTextures[key]) {
+          persistent.add(GraphicsEngine.proceduralTextures[key]);
+        }
+      });
+      if (GraphicsEngine.currentEnvMap) {
+        persistent.add(GraphicsEngine.currentEnvMap);
+      }
     }
+    if (typeof ProceduralAssets !== "undefined") {
+      Object.keys(ProceduralAssets.geoCache || {}).forEach((key) =>
+        persistent.add(ProceduralAssets.geoCache[key]),
+      );
+      if (ProceduralAssets.sharedMaterials) {
+        Object.keys(ProceduralAssets.sharedMaterials).forEach((key) => {
+          const material = ProceduralAssets.sharedMaterials[key];
+          persistent.add(material);
+          collectSlots(material);
+        });
+      }
+      if (ProceduralAssets.contactShadowTexture) {
+        persistent.add(ProceduralAssets.contactShadowTexture);
+      }
+    }
+    // scene.environment è l'IBL PMREM: viene ricreato da
+    // buildAtmosphericSkyAndIBL, quindi non lo liberiamo da qui.
+    if (scene.environment) persistent.add(scene.environment);
+
+    const isShared = (resource) =>
+      Boolean(resource) && (persistent.has(resource) || keep(resource));
+
+    const remoteMeshes = new Set();
+    if (typeof remotePlayers !== "undefined") {
+      Object.keys(remotePlayers).forEach((id) => {
+        const mesh = remotePlayers[id] && remotePlayers[id].mesh;
+        if (mesh) remoteMeshes.add(mesh);
+      });
+    }
+
+    const disposeMaterial = (material) => {
+      if (!material) return;
+      mapSlots.forEach((slot) => {
+        const texture = material[slot];
+        if (texture && !isShared(texture) && texture.dispose) {
+          texture.dispose();
+        }
+      });
+      if (!isShared(material) && material.dispose) material.dispose();
+    };
+
+    const disposeObject = (object) => {
+      if (!object) return;
+      // Ricorsione sui figli (inclusi i THREE.Group) prima del nodo stesso.
+      while (object.children && object.children.length > 0) {
+        disposeObject(object.children[0]);
+        object.remove(object.children[0]);
+      }
+      if (object.geometry && !isShared(object.geometry) && object.geometry.dispose) {
+        object.geometry.dispose();
+      }
+      if (Array.isArray(object.material)) {
+        object.material.forEach(disposeMaterial);
+      } else {
+        disposeMaterial(object.material);
+      }
+    };
+
+    while (scene.children.length > 0) {
+      const child = scene.children[0];
+      // Le mesh remote vengono riutilizzate quando la gara ricrea la scena.
+      // Disporle qui lascerebbe la rete con riferimenti a materiali/geometrie
+      // inutilizzabili e manterrebbe attive solo le collisioni.
+      if (remoteMeshes.has(child)) {
+        scene.remove(child);
+        continue;
+      }
+      disposeObject(child);
+      scene.remove(child);
+    }
+
     if (typeof GraphicsEngine !== "undefined") {
       GraphicsEngine.clearBrakeDiscs();
-      // Reinizializza il post-processing dopo aver svuotato la scena,
-      // altrimenti il EffectComposer mantiene riferimenti stale e lo schermo
-      // diventa nero durante la gara.
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-      if (GraphicsEngine.composer) {
-        GraphicsEngine.composer.dispose ? GraphicsEngine.composer.dispose() : null;
-        GraphicsEngine.composer = null;
+      // Riusa il composer esistente invece di distruggerlo e ricrearlo: la
+      // ricreazione dei pass/FBO (RenderPass, UnrealBloomPass, ShaderPass) ad
+      // ogni transizione showroom ↔ gara causava un hitch visibile all'avvio
+      // della sessione. Ora si aggiornano solo scena/camera e dimensioni.
+      if (typeof GraphicsEngine.ensurePostProcessing === "function") {
+        GraphicsEngine.ensurePostProcessing(this.scene, this.camera);
+      } else {
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+        GraphicsEngine.disposePostProcessing();
+        GraphicsEngine.initPostProcessing(this.scene, this.camera, pixelRatio);
       }
-      GraphicsEngine.initPostProcessing(this.scene, this.camera, pixelRatio);
       GraphicsEngine.setupSunLight(this.scene, new THREE.Vector3(120, 220, 90));
     } else {
       const hemiLight = new THREE.HemisphereLight(0xb1e1ff, 0x38422d, 0.65);
       const sun = new THREE.DirectionalLight(0xfff5e6, 1.25);
       sun.position.set(120, 220, 90);
       sun.castShadow = true;
-      this.scene.add(hemiLight, sun);
+      this.scene.add(hemiLight, sun, sun.target);
     }
   },
 
@@ -181,13 +317,7 @@ const GameApp = {
 
     this.spawnShowroomCar(this.selectedCarId);
     if (typeof GraphicsEngine !== "undefined") {
-      GraphicsEngine.configureAtmosphericFog(
-        this.scene,
-        0xb9e8f2,
-        0.00008,
-        0.5,
-      );
-      GraphicsEngine.applyHeightFog(this.scene);
+      GraphicsEngine.configureAtmosphericFog(this.scene, 0xb9e8f2, 0.00008);
     }
 
     this.camera.fov = 45;
@@ -260,9 +390,90 @@ const GameApp = {
     );
   },
 
+  /**
+   * Overlay di debug performance (tasto F8). Calcola un FPS interno
+   * indipendente dalla gara/showroom e lo mostra insieme ai tempi di
+   * update/render e alle draw call fornite da GraphicsEngine.perf.
+   */
+  updatePerfOverlay(dt, cpuMs) {
+    // Clamp del campione: se la tab è stata in background il primo dt può essere
+    // enorme e falserebbe la stima FPS (innescando un declassamento spurio).
+    const sampleDt = Math.min(dt, 0.1);
+    this._perfFrames = (this._perfFrames || 0) + 1;
+    this._perfAccum = (this._perfAccum || 0) + sampleDt;
+    if (this._perfAccum >= 0.5) {
+      this._perfFps = Math.round(this._perfFrames / this._perfAccum);
+      this._perfFrames = 0;
+      this._perfAccum = 0;
+      this.autoAdaptQuality(this._perfFps);
+    }
+
+    const el = document.getElementById("perf-debug");
+    if (!el || el.classList.contains("hidden")) return;
+    const perf =
+      (typeof GraphicsEngine !== "undefined" && GraphicsEngine.perf) || {};
+    const set = (id, value) => {
+      const target = document.getElementById(id);
+      const text = String(value);
+      if (target && target.textContent !== text) target.textContent = text;
+    };
+    set("perf-fps", this._perfFps || 0);
+    set("perf-update", (typeof cpuMs === "number" ? cpuMs : 0).toFixed(2));
+    set("perf-render", (perf.renderMs || 0).toFixed(2));
+    set("perf-draw", perf.drawCalls || 0);
+    set("perf-tri", perf.triangles || 0);
+  },
+
+  /**
+   * Auto-adattamento conservativo della qualità: abbassa il livello se gli FPS
+   * restano bassi, con cooldown per evitare oscillazioni. Non forza mai il
+   * rialzo automatico e non persiste la scelta, così l'impostazione esplicita
+   * dell'utente nel profilo resta intatta.
+   */
+  autoAdaptQuality(fps) {
+    // Se l'utente ha scelto manualmente la qualità, l'auto-adattamento tace.
+    if (this._autoAdaptDisabled) return;
+    if (
+      typeof GraphicsEngine === "undefined" ||
+      typeof GraphicsEngine.setQuality !== "function" ||
+      typeof GraphicsEngine.getQuality !== "function"
+    ) {
+      return;
+    }
+    this._adaptCooldown = Math.max(0, (this._adaptCooldown || 0) - 0.5);
+    if (this._adaptCooldown > 0) return;
+
+    const order = ["low", "medium", "high"];
+    const cur = GraphicsEngine.getQuality() || "high";
+    let idx = order.indexOf(cur);
+    if (idx < 0) idx = order.length - 1;
+    if (fps < 34 && idx > 0) {
+      const level = order[idx - 1];
+      GraphicsEngine.setQuality(level, { persist: false });
+      this._adaptCooldown = 8.0;
+      if (typeof UI !== "undefined" && UI.updateGraphicsQualityUI) {
+        UI.updateGraphicsQualityUI();
+      }
+      if (typeof UI !== "undefined" && UI.showToast) {
+        UI.showToast(`Qualità ridotta automaticamente a ${level.toUpperCase()}`, "fa-gauge-high");
+      }
+    }
+  },
+
   animate() {
     requestAnimationFrame(() => this.animate());
-    const dt = Math.min(0.04, this.clock.getDelta());
+    const frameStart = performance.now();
+    // `rawDt` (non limitato) serve solo alla stima FPS dell'overlay di debug:
+    // il passo di simulazione resta limitato a 40ms per stabilità fisica.
+    const rawDt = this.clock.getDelta();
+    const dt = Math.min(0.04, rawDt);
+
+    // Modalità gara: disattiva i backdrop-filter dei pannelli HUD (guadagno FPS
+    // a resa grafica praticamente invariata). Cambia classe solo alla transizione.
+    if (this._isRacingClass !== RaceEngine.isActive) {
+      this._isRacingClass = RaceEngine.isActive;
+      document.documentElement.classList.toggle("racing", RaceEngine.isActive);
+    }
 
     if (RaceEngine.isActive) {
       RaceEngine.update(dt);
@@ -287,6 +498,9 @@ const GameApp = {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
+
+    // Overlay di debug performance (F8) + auto-adattamento qualità
+    this.updatePerfOverlay(rawDt, performance.now() - frameStart);
   },
 };
 

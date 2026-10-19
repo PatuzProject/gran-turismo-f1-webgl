@@ -38,6 +38,7 @@ const CAR_SOUND_PROFILES = {
     bovFlutter: true,
     shiftPopVol: 0.55,
     overrunPops: true,
+    backfireProbability: 0.35, // Scoppiettii in rilascio moderati (turbo I4)
     realInspiration: "Honda Civic Type R FL5 TCR • Campionato TCR World Tour",
   },
   muscle: {
@@ -57,6 +58,7 @@ const CAR_SOUND_PROFILES = {
     bovFlutter: false,
     shiftPopVol: 0.75,
     overrunPops: true,
+    backfireProbability: 0.6, // V8 crossplane: scoppi profondi e frequenti in rilascio
     realInspiration: "Ford Mustang GT3 / Supercars V8 • Bathurst 1000 & Daytona",
   },
   gt_comp: {
@@ -76,6 +78,7 @@ const CAR_SOUND_PROFILES = {
     bovFlutter: false,
     shiftPopVol: 0.90, // Esplosione secca da taglio accensione "CRACK"
     overrunPops: true,
+    backfireProbability: 0.45, // Flat-6 GT3: crackle secco e ritmico
     realInspiration: "Porsche 911 GT3 R (992) • 24 Ore di Spa & Nürburgring Nordschleife",
   },
   hypercar: {
@@ -96,6 +99,7 @@ const CAR_SOUND_PROFILES = {
     bovFlutter: false,
     shiftPopVol: 1.0, // Schioppo sonico impressionante
     overrunPops: true,
+    backfireProbability: 0.22, // V12 aspirato ad alto regime: pop più rari ma secchi
     realInspiration: "Aston Martin Valkyrie AMR Pro • Cosworth V12 11.000 RPM Silverstone",
   },
 };
@@ -107,6 +111,7 @@ const AudioEngine = {
 
   // 1. Gruppo Combustione Motore
   engineGain: null,
+  engineBangGain: null, // Nodo volume dedicato al "bang" di cambiata (isola il duck dall'automazione per-frame)
   distortionNode: null,
   exhaustFilter: null,
   combustionOsc1: null, // Fondamentale f0
@@ -137,6 +142,11 @@ const AudioEngine = {
   tireRumbleFilter: null,
   tireRumbleGain: null,
 
+  // 5. Scia Aerodinamica & Vuoto d'Aria (Slipstream Wake & Buffeting)
+  draftNode: null,
+  draftFilter: null,
+  draftGain: null,
+
   // Telemetria stato interno
   activeProfileKey: "hatchback",
   prevThrottle: 0,
@@ -145,6 +155,11 @@ const AudioEngine = {
   lastShiftBangTime: 0,
   revLimiterPhase: 0,
   previewTimer: null,
+
+  // Cache di scheduling: evita di ri-schedulare ogni frame parametri costanti
+  // (es. Q del filtro scarico legato al profilo) accumulando eventi sulla timeline.
+  _lastScheduledProfileKey: null,
+  _paramCache: null,
 
   // ---------------------------------------------------------------------------
   // INIZIALIZZAZIONE GRAPH AUDIO WEB AUDIO API
@@ -180,6 +195,12 @@ const AudioEngine = {
 
     this.engineGain = this.ctx.createGain();
     this.engineGain.gain.value = 0.0;
+
+    // Nodo dedicato al taglio di accensione in cambiata ("spark cut bang").
+    // È separato da engineGain così il duck momentaneo non entra in conflitto con
+    // l'automazione del volume motore ri-schedulata ad ogni frame da updateTelemetryAudio.
+    this.engineBangGain = this.ctx.createGain();
+    this.engineBangGain.gain.value = 1.0;
 
     // Bus di miscelazione oscillatori di combustione
     const combustionBus = this.ctx.createGain();
@@ -217,7 +238,8 @@ const AudioEngine = {
     combustionBus.connect(this.distortionNode);
     this.distortionNode.connect(this.exhaustFilter);
     this.exhaustFilter.connect(this.engineGain);
-    this.engineGain.connect(this.masterGain);
+    this.engineGain.connect(this.engineBangGain);
+    this.engineBangGain.connect(this.masterGain);
 
     this.combustionOsc1.start();
     this.combustionOsc2.start();
@@ -266,6 +288,11 @@ const AudioEngine = {
     // Audio Pneumatici (Squeal ad alta frequenza + Scrub asfalto)
     // -------------------------------------------------------------------------
     this.initTireAudio();
+
+    // -------------------------------------------------------------------------
+    // Audio Scia Aerodinamica (Turbolenza e Risucchio di Bassa Pressione)
+    // -------------------------------------------------------------------------
+    this.initSlipstreamAudio();
   },
 
   initNoiseBuffer() {
@@ -315,6 +342,26 @@ const AudioEngine = {
     this.tireRumbleNode.start();
   },
 
+  initSlipstreamAudio() {
+    if (!this.noiseBuffer) return;
+    this.draftNode = this.ctx.createBufferSource();
+    this.draftNode.buffer = this.noiseBuffer;
+    this.draftNode.loop = true;
+
+    this.draftFilter = this.ctx.createBiquadFilter();
+    this.draftFilter.type = "bandpass";
+    this.draftFilter.frequency.value = 420;
+    this.draftFilter.Q.value = 2.4;
+
+    this.draftGain = this.ctx.createGain();
+    this.draftGain.gain.value = 0.0;
+
+    this.draftNode.connect(this.draftFilter);
+    this.draftFilter.connect(this.draftGain);
+    this.draftGain.connect(this.masterGain);
+    this.draftNode.start();
+  },
+
   makeDistortionCurve(k = 30) {
     const n_samples = 44100;
     const curve = new Float32Array(n_samples);
@@ -332,19 +379,51 @@ const AudioEngine = {
     const now = this.ctx.currentTime;
     if (active) {
       this.engineGain.gain.setTargetAtTime(0.32, now, 0.08);
+      // Riallinea il nodo bang: nessun duck residuo all'avvio dell'audio di guida.
+      if (this.engineBangGain) this.engineBangGain.gain.setValueAtTime(1.0, now);
     } else {
       this.engineGain.gain.setTargetAtTime(0.0, now, 0.06);
       if (this.gearWhineGain) this.gearWhineGain.gain.setTargetAtTime(0.0, now, 0.04);
       if (this.turboSpoolGain) this.turboSpoolGain.gain.setTargetAtTime(0.0, now, 0.04);
       if (this.screechGain) this.screechGain.gain.setTargetAtTime(0.0, now, 0.04);
       if (this.tireRumbleGain) this.tireRumbleGain.gain.setTargetAtTime(0.0, now, 0.04);
+      if (this.draftGain) this.draftGain.gain.setTargetAtTime(0.0, now, 0.04);
     }
+  },
+
+  // Limite di giri (RPM) per vettura: unica fonte di verità (telemetria + anteprima).
+  // Nota: i valori sono RPM, non Hz; il nome riflette il dato reale.
+  _getRedlineRPM(carId) {
+    return carId === "hypercar" ? 11000 : carId === "gt_comp" ? 8800 : carId === "muscle" ? 7000 : 8200;
+  },
+
+  // Schedula un AudioParam solo se il target è realmente cambiato rispetto all'ultimo
+  // invio: evita di accumulare sulla timeline eventi identici ad ogni frame.
+  // Il risultato udibile è invariato (stesso target, stesso time constant).
+  _scheduleIfChanged(id, param, value, now, timeConstant) {
+    if (!this._paramCache) this._paramCache = {};
+    const prev = this._paramCache[id];
+    if (prev !== undefined && Math.abs(prev - value) < 1e-4) return;
+    this._paramCache[id] = value;
+    param.setTargetAtTime(value, now, timeConstant);
+  },
+
+  // DSP condiviso della scia aerodinamica (usato sia dal percorso telemetria che da updateSlipstream).
+  _applySlipstreamDSP(draftIntensity, speedAbs, now) {
+    if (!this.draftGain || !this.draftFilter) return;
+    const clampedDraft = Math.min(1.0, Math.max(0.0, draftIntensity || 0));
+    const targetDraftGain = clampedDraft > 0.05
+      ? Math.min(0.40, clampedDraft * 0.36 * Math.min(1.0, speedAbs / 28))
+      : 0.0;
+    this.draftGain.gain.setTargetAtTime(targetDraftGain, now, 0.035);
+    const targetFilterFreq = 360 + clampedDraft * 520 + (speedAbs / 70) * 160;
+    this.draftFilter.frequency.setTargetAtTime(targetFilterFreq, now, 0.045);
   },
 
   // ---------------------------------------------------------------------------
   // AGGIORNAMENTO DINAMICO TELEMETRIA IN PISTA (CHIAMATO 60 VOLTE AL SECONDO)
   // ---------------------------------------------------------------------------
-  updateTelemetryAudio(rpm, throttle, screechIntensity, carIdentifier = "hatchback", speed = 0, gear = 1, dt = 0.016) {
+  updateTelemetryAudio(rpm, throttle, screechIntensity, carIdentifier = "hatchback", speed = 0, gear = 1, dt = 0.016, draftIntensity = 0) {
     if (!this.ctx || this.isMuted) return;
     const now = this.ctx.currentTime;
 
@@ -361,7 +440,7 @@ const AudioEngine = {
 
     // Limiti RPM della vettura
     const idleRPM = 800;
-    const redlineRPM = profileKey === "hypercar" ? 11000 : profileKey === "gt_comp" ? 8800 : profileKey === "muscle" ? 7000 : 8200;
+    const redlineRPM = this._getRedlineRPM(profileKey);
     const rpmClamped = Math.max(idleRPM, Math.min(redlineRPM + 200, rpm || idleRPM));
     const rpmNorm = (rpmClamped - idleRPM) / (redlineRPM - idleRPM);
     const speedAbs = Math.abs(speed || 0);
@@ -372,28 +451,32 @@ const AudioEngine = {
     // Frequenza fondamentale di accensione: (RPM / 60) * (cilindri / 2)
     const baseFreq = Math.max(20, (rpmClamped / 60) * prof.firingMult);
 
-    this.combustionOsc1.frequency.setTargetAtTime(baseFreq, now, 0.022);
+    this._scheduleIfChanged("comb1Hz", this.combustionOsc1.frequency, baseFreq, now, 0.022);
     // 2a armonica con micro-detuning per battimento naturale dei gas di scarico
-    this.combustionOsc2.frequency.setTargetAtTime(baseFreq * 2.004, now, 0.022);
+    this._scheduleIfChanged("comb2Hz", this.combustionOsc2.frequency, baseFreq * 2.004, now, 0.022);
     // 3a armonica (o 4a per i V8) per raspacustico
     const harm3Mult = prof.cylinders === 8 ? 4.01 : 3.01;
-    this.combustionOsc3.frequency.setTargetAtTime(baseFreq * harm3Mult, now, 0.022);
+    this._scheduleIfChanged("comb3Hz", this.combustionOsc3.frequency, baseFreq * harm3Mult, now, 0.022);
     // Sub-ottava profonda per il baritono V8 e bassi
-    this.subRumbleOsc.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.022);
+    this._scheduleIfChanged("subHz", this.subRumbleOsc.frequency, baseFreq * 0.5, now, 0.022);
 
     // Bilanciamento volumi armoniche
-    this.gainOsc1.gain.setTargetAtTime(0.55 + throttle * 0.25, now, 0.03);
-    this.gainOsc2.gain.setTargetAtTime(prof.harm2Gain * (0.6 + throttle * 0.4), now, 0.03);
-    this.gainOsc3.gain.setTargetAtTime(prof.harm3Gain * (0.4 + rpmNorm * 0.6), now, 0.03);
-    this.gainSub.gain.setTargetAtTime(prof.subGain * (0.7 + (1 - rpmNorm) * 0.3), now, 0.03);
+    this._scheduleIfChanged("gainOsc1", this.gainOsc1.gain, 0.55 + throttle * 0.25, now, 0.03);
+    this._scheduleIfChanged("gainOsc2", this.gainOsc2.gain, prof.harm2Gain * (0.6 + throttle * 0.4), now, 0.03);
+    this._scheduleIfChanged("gainOsc3", this.gainOsc3.gain, prof.harm3Gain * (0.4 + rpmNorm * 0.6), now, 0.03);
+    this._scheduleIfChanged("gainSub", this.gainSub.gain, prof.subGain * (0.7 + (1 - rpmNorm) * 0.3), now, 0.03);
 
     // =========================================================================
     // 2. FILTRO SCARICO & SATURAZIONE NON LINEARE
     // =========================================================================
     // A basso regime lo scarico è cupo; aprendo il gas e salendo di giri si apre fino a 4-6 kHz
     const filterCutoff = prof.resonanceFreq * (0.35 + rpmNorm * 1.45 + throttle * 0.7);
-    this.exhaustFilter.frequency.setTargetAtTime(Math.min(18000, filterCutoff), now, 0.025);
-    this.exhaustFilter.Q.setTargetAtTime(prof.filterQ, now, 0.03);
+    this._scheduleIfChanged("exhCutoff", this.exhaustFilter.frequency, Math.min(18000, filterCutoff), now, 0.025);
+    // Q del filtro: costante di profilo, schedulata solo al cambio vettura (non ogni frame).
+    if (this._lastScheduledProfileKey !== profileKey) {
+      this._lastScheduledProfileKey = profileKey;
+      this.exhaustFilter.Q.setTargetAtTime(prof.filterQ, now, 0.03);
+    }
 
     // Limitatore di giri a rimbalzo (Spark-Cut Rev Limiter Bouncing)
     const isAtLimiter = rpmClamped >= redlineRPM - 40;
@@ -416,8 +499,8 @@ const AudioEngine = {
       // Frequenza proporzionale a velocità e marcia
       const currentGearNum = typeof gear === "number" && gear >= 1 ? gear : 1;
       const whineFreq = Math.max(180, speedAbs * 32.5 + currentGearNum * 42.0);
-      this.gearWhineOsc.frequency.setTargetAtTime(whineFreq, now, 0.02);
-      this.gearWhineFilter.frequency.setTargetAtTime(whineFreq, now, 0.02);
+      this._scheduleIfChanged("gearWhineOscHz", this.gearWhineOsc.frequency, whineFreq, now, 0.02);
+      this._scheduleIfChanged("gearWhineFilterHz", this.gearWhineFilter.frequency, whineFreq, now, 0.02);
 
       const whineVol = prof.gearWhineFactor * Math.min(1.0, speedAbs / 55.0) * (0.35 + throttle * 0.65);
       this.gearWhineGain.gain.setTargetAtTime(whineVol, now, 0.04);
@@ -429,8 +512,8 @@ const AudioEngine = {
     if (prof.hasTurbo && this.turboSpoolGain) {
       const turboBoost = Math.max(0, throttle * 0.8 + rpmNorm * 0.5);
       const spoolFreq = 1600 + turboBoost * (prof.turboSpoolMax - 1600);
-      this.turboSpoolOsc.frequency.setTargetAtTime(spoolFreq, now, 0.06);
-      this.turboSpoolFilter.frequency.setTargetAtTime(spoolFreq, now, 0.06);
+      this._scheduleIfChanged("turboOscHz", this.turboSpoolOsc.frequency, spoolFreq, now, 0.06);
+      this._scheduleIfChanged("turboFilterHz", this.turboSpoolFilter.frequency, spoolFreq, now, 0.06);
       this.turboSpoolGain.gain.setTargetAtTime(turboBoost * 0.18, now, 0.05);
 
       // Rileva rilascio rapido del gas ad alto regime: innesca il celebre sfiato wastegate!
@@ -443,7 +526,9 @@ const AudioEngine = {
     // 5. SCOPPIETTI IN RILASCIO (EXHAUST OVERRUN CRACKLES)
     // =========================================================================
     if (prof.overrunPops && this.prevThrottle > 0.4 && throttle === 0 && rpmNorm > 0.45) {
-      if (Math.random() < prof.backfireProbability * 0.35) {
+      // Robustezza: se il profilo non definisce backfireProbability, fallback a 0.35
+      const backfireProb = (typeof prof.backfireProbability === "number" ? prof.backfireProbability : 0.35) * 0.35;
+      if (Math.random() < backfireProb) {
         this.playPopSound(now, 0.38);
       }
     }
@@ -455,17 +540,29 @@ const AudioEngine = {
     if (this.screechGain && this.tireRumbleGain) {
       // 1. Squeal stridente acuto
       this.screechGain.gain.setTargetAtTime(clampedScreech * 0.28, now, 0.035);
-      this.screechFilter.frequency.setTargetAtTime(1100 + clampedScreech * 750, now, 0.04);
+      this._scheduleIfChanged("screechFilterHz", this.screechFilter.frequency, 1100 + clampedScreech * 750, now, 0.04);
 
       // 2. Scrub sordo del battistrada sull'asfalto
       const scrubLevel = clampedScreech > 0.15 ? Math.min(1.0, clampedScreech * 1.4) : 0;
       this.tireRumbleGain.gain.setTargetAtTime(scrubLevel * 0.22, now, 0.035);
-      this.tireRumbleFilter.frequency.setTargetAtTime(220 + scrubLevel * 140, now, 0.04);
+      this._scheduleIfChanged("tireRumbleFilterHz", this.tireRumbleFilter.frequency, 220 + scrubLevel * 140, now, 0.04);
     }
+
+    // =========================================================================
+    // 7. FRUSCIO AERODINAMICO & RISUCCHIO SCIA (SLIPSTREAM DSP)
+    // =========================================================================
+    this._applySlipstreamDSP(draftIntensity, speedAbs, now);
 
     this.prevThrottle = throttle;
     this.prevRPM = rpmClamped;
     this.prevGear = gear;
+  },
+
+  updateSlipstream(draftIntensity, speed = 0) {
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    // Riusa la stessa DSP del percorso telemetria (nessuna duplicazione).
+    this._applySlipstreamDSP(draftIntensity, Math.abs(speed || 0), now);
   },
 
   // ---------------------------------------------------------------------------
@@ -487,11 +584,16 @@ const AudioEngine = {
     // 2. Thump sordo nei collettori (85 Hz)
     this.playTone(82, 0.08, "sawtooth", vol * 0.55);
 
-    // 3. Micro-taglio di accensione da 60ms (spark cut) sul volume motore
-    if (this.engineGain) {
-      this.engineGain.gain.cancelScheduledValues(now);
-      this.engineGain.gain.setValueAtTime(0.04, now);
-      this.engineGain.gain.setTargetAtTime(0.32, now + 0.065, 0.02);
+    // 3. Micro-taglio di accensione da 60ms (spark cut) sul volume motore.
+    //    Applichiamo il duck su engineBangGain, un nodo gain dedicato inserito tra
+    //    engineGain e masterGain: così NON tocchiamo engineGain.gain, il cui valore è
+    //    ri-schedulato ad ogni frame da updateTelemetryAudio (evitando cancelScheduledValues
+    //    che azzererebbe l'automazione fluida del volume motore causando glitch).
+    if (this.engineBangGain) {
+      const bg = this.engineBangGain.gain;
+      bg.cancelScheduledValues(now);
+      bg.setValueAtTime(0.12, now);
+      bg.setTargetAtTime(1.0, now + 0.06, 0.02);
     }
   },
 
@@ -559,7 +661,7 @@ const AudioEngine = {
 
     this.setDrivingAudioActive(true);
     const prof = CAR_SOUND_PROFILES[carId] || CAR_SOUND_PROFILES.hatchback;
-    const redline = carId === "hypercar" ? 11000 : carId === "gt_comp" ? 8800 : carId === "muscle" ? 7000 : 8200;
+    const redline = this._getRedlineRPM(carId);
     const idle = 850;
 
     let simRPM = idle;
@@ -632,6 +734,17 @@ const AudioEngine = {
     setTimeout(() => this.playTone(880, 0.22, "triangle", 0.32), 75);
   },
 
+  playVictoryFanfare() {
+    this.init();
+    if (!this.ctx || this.isMuted) return;
+    const notes = [523.25, 659.25, 783.99, 1046.50];
+    notes.forEach((freq, idx) => {
+      setTimeout(() => {
+        this.playTone(freq, 0.35, "triangle", 0.3);
+      }, idx * 150);
+    });
+  },
+
   playCollisionImpact(impactSpeedKmh = 30, isBarrier = false) {
     this.init();
     if (!this.ctx || this.isMuted) return;
@@ -696,6 +809,32 @@ const AudioEngine = {
     gain.connect(this.masterGain);
     osc.start(now);
     osc.stop(now + 0.35);
+  },
+
+  playSlingshotBoost() {
+    this.init();
+    if (!this.ctx || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(1850, now + 0.42);
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(750, now);
+    filter.frequency.exponentialRampToValueAtTime(3000, now + 0.42);
+    filter.Q.setValueAtTime(3.5, now);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.exponentialRampToValueAtTime(0.32, now + 0.035);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.46);
+
+    this.playNoiseBurst(now, 0.52, 600, 0.26);
   },
 
   toggleMute() {

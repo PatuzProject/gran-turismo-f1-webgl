@@ -648,7 +648,37 @@ function getTrackElevation(key, u) {
   return p0[1] * (1 - s) + p1[1] * s;
 }
 
-const tracksDir = path.join('raceTracks', 'racetrack-database', 'tracks');
+const TRACK_POLE_SIDES = {
+  austin: 'left',
+  brands_hatch: 'right',
+  budapest: 'left',
+  catalunya: 'left',
+  hockenheim: 'left',
+  ims: 'left',
+  melbourne: 'left',
+  mexico_city: 'left',
+  montreal: 'right',
+  moscow_raceway: 'right',
+  norisring: 'right',
+  nuerburgring: 'left',
+  oschersleben: 'right',
+  sakhir: 'left',
+  sao_paulo: 'right',
+  sepang: 'left',
+  shanghai: 'left',
+  silverstone: 'left',
+  sochi: 'left',
+  spa: 'right',
+  spielberg: 'left',
+  suzuka: 'right',
+  yas_marina: 'right',
+  zandvoort: 'left',
+  monza: 'right'
+};
+
+const tracksDir = fs.existsSync(path.join('raceTracks', 'racetrack-database', 'tracks'))
+  ? path.join('raceTracks', 'racetrack-database', 'tracks')
+  : path.join('..', 'raceTracks', 'racetrack-database', 'tracks');
 const files = Object.keys(TRACK_METADATA);
 
 const newTrackBlocks = [];
@@ -830,6 +860,7 @@ for (const key of files) {
     curbColorB: ${JSON.stringify(meta.curbColorB)},
     groundColor: ${meta.groundColor},
     sceneryType: ${JSON.stringify(meta.sceneryType)},
+    poleSide: ${JSON.stringify(TRACK_POLE_SIDES[meta.id] || 'left')},
     sectorSplits: [${sectorSplits.join(', ')}],
     speedTrapU: ${speedTrapU},
     drsZones: ${jsonDrs},
@@ -853,7 +884,10 @@ if (!monzaMatch) {
   console.error('Could not find Monza in data.js!');
   process.exit(1);
 }
-const monzaBlock = monzaMatch[0];
+let monzaBlock = monzaMatch[0];
+if (!monzaBlock.includes('poleSide:')) {
+  monzaBlock = monzaBlock.replace(/sceneryType:\s*[\"']park[\"'],/, 'sceneryType: "park",\n    poleSide: "right",');
+}
 
 const updatedCatalog = `// =========================================================================
 // CATALOGO GRAND PRIX F1 (25 CIRCUITI UFFICIALI FIA & RACETRACK-DATABASE)

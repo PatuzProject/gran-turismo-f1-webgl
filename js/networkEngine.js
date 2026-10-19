@@ -29,6 +29,9 @@ const NetworkEngine = {
   nickname: "Pilota LAN",
   selectedColor: "#00f0ff",
   selectedCarId: "hatchback",
+  roomGameMode: "single_race", // 'single_race' | 'championship'
+  championshipData: null,
+  currentRaceId: null,
 
   // Debug metriche di rete
   txCount: 0,
@@ -40,9 +43,17 @@ const NetworkEngine = {
   sendTimer: null,
   pingTimer: null,
 
+  // Stato riconnessione automatica e guardie anti-race sulla connessione
+  manualDisconnect: false, // true se la disconnessione è stata richiesta dall'utente
+  _connecting: false, // true mentre un socket è in fase di apertura (CONNECTING)
+  _isReconnecting: false, // true durante l'apertura avviata dal retry automatico
+  _reconnectAttempts: 0, // contatore tentativi di riconnessione (max 5)
+  _reconnectTimer: null, // handle del timer di retry (timeout)
+  _wsUrl: null, // ultimo URL WebSocket usato, per i tentativi automatici
+
   // Sincronizzazione orologio al millisecondo (NTP Clock Sync)
   clockOffset: null, // Millisecondi di offset tra orologio locale e server
-  bestRtt: null,     // RTT minimo registrato per pesatura campioni NTP
+  bestRtt: null, // RTT minimo registrato per pesatura campioni NTP
   getServerTime() {
     if (this.clockOffset === null) return Date.now();
     return Date.now() + this.clockOffset;
@@ -52,9 +63,27 @@ const NetworkEngine = {
   // 1. CONNESSIONE AL SERVER WEBSOCKET
   // ---------------------------------------------------------------------------
   connect(hostUrl, nickname, color, carId, onSuccess, onError) {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.disconnect();
-    }
+    // Guardia anti doppia connessione: ignora chiamate duplicate mentre un
+    // socket è già in fase di apertura.
+    if (this._connecting) return;
+
+    const isReconnect = this._isReconnecting === true;
+    this._isReconnecting = false;
+
+    // Stacca e chiudi in sicurezza qualsiasi socket precedente, anche se è
+    // ancora in CONNECTING/CLOSING: senza il "detach" dei suoi handler, un
+    // vecchio onopen avvierebbe i timer e un vecchio onclose ucciderebbe la
+    // NUOVA connessione (race di connessione / leak di timer).
+    this._detachSocket();
+
+    // Ferma SEMPRE i timer esistenti e annulla eventuali retry pendenti.
+    this.stopTickLoop();
+    this.stopPingLoop();
+    this.stopMetricsTimer();
+    this._clearReconnectTimer();
+    if (!isReconnect) this._reconnectAttempts = 0;
+    this.manualDisconnect = false;
+    if (!isReconnect) this.currentRaceId = null;
 
     this.nickname = nickname || this.nickname;
     this.selectedColor = color || this.selectedColor;
@@ -67,25 +96,36 @@ const NetworkEngine = {
 
     let wsUrl = (hostUrl || "").trim();
     if (!wsUrl) {
-      wsUrl = window.location.hostname ? `${window.location.hostname}:3000` : "localhost:3000";
+      wsUrl = window.location.hostname
+        ? `${window.location.hostname}:3000`
+        : "localhost:3000";
     }
     if (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://")) {
       wsUrl = "ws://" + wsUrl;
     }
+    this._wsUrl = wsUrl;
 
     try {
       this.socket = new WebSocket(wsUrl);
     } catch (err) {
+      this._connecting = false;
       if (onError) onError(err);
       return;
     }
+    this._connecting = true;
 
     this.socket.onopen = () => {
+      this._connecting = false;
+      this._reconnectAttempts = 0;
+      this._clearReconnectTimer();
       this.isConnected = true;
       console.log(`[NetEngine] Connesso a ${wsUrl}`);
 
       // Calcola posizione iniziale dell'auto locale
-      let startX = 0, startY = 0, startZ = 0, startRotY = 0;
+      let startX = 0,
+        startY = 0,
+        startZ = 0,
+        startRotY = 0;
       if (typeof RaceEngine !== "undefined" && RaceEngine.player) {
         startX = RaceEngine.player.position.x;
         startY = RaceEngine.player.position.y;
@@ -125,6 +165,7 @@ const NetworkEngine = {
     };
 
     this.socket.onclose = () => {
+      this._connecting = false;
       this.isConnected = false;
       this.myPlayerId = null;
       this.hostId = null;
@@ -136,9 +177,14 @@ const NetworkEngine = {
       this.stopPingLoop();
       this.stopMetricsTimer();
       this.clearAllRemotePlayers();
+      this.removeRemoteRacersFromRace();
       this.updateDiagHUD();
       console.log("[NetEngine] Disconnesso dal server LAN");
       if (typeof UI !== "undefined") UI.onLanDisconnected();
+
+      // Riconnessione automatica con backoff esponenziale, solo se la
+      // disconnessione NON è stata richiesta dall'utente.
+      this._scheduleReconnect();
     };
 
     this.socket.onerror = (err) => {
@@ -148,10 +194,14 @@ const NetworkEngine = {
   },
 
   disconnect() {
-    if (this.socket) {
-      this.socket.close();
-      this.socket = null;
-    }
+    // Disconnessione voluta dall'utente: disabilita la riconnessione automatica.
+    this.manualDisconnect = true;
+    this.currentRaceId = null;
+    this._clearReconnectTimer();
+    this._reconnectAttempts = 0;
+    // Stacca gli handler PRIMA di chiudere: evita che un onclose tardivo
+    // azzeri lo stato di una eventuale NUOVA connessione avviata subito dopo.
+    this._detachSocket();
     this.isConnected = false;
     this.myPlayerId = null;
     this.hostId = null;
@@ -163,7 +213,108 @@ const NetworkEngine = {
     this.stopPingLoop();
     this.stopMetricsTimer();
     this.clearAllRemotePlayers();
+    this.removeRemoteRacersFromRace();
     this.updateDiagHUD();
+  },
+
+  // Stacca tutti gli handler del socket corrente e lo chiude in sicurezza.
+  _detachSocket() {
+    const s = this.socket;
+    if (s) {
+      s.onopen = null;
+      s.onclose = null;
+      s.onmessage = null;
+      s.onerror = null;
+      try {
+        s.close();
+      } catch (e) {
+        // Socket già chiuso o non più valido: ignora.
+      }
+    }
+    this.socket = null;
+    this._connecting = false;
+  },
+
+  // Annulla il timer di riconnessione automatica pendente.
+  _clearReconnectTimer() {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+  },
+
+  // Pianifica un tentativo di riconnessione con backoff esponenziale
+  // (1s, 2s, 4s, 8s) per un massimo di 5 tentativi. Attivo solo se la
+  // disconnessione non è stata richiesta dall'utente.
+  _scheduleReconnect() {
+    if (this.manualDisconnect || !this._wsUrl) return;
+    if (this._reconnectAttempts >= 5) {
+      console.warn(
+        "[NetEngine] Riconnessione automatica esaurita (5 tentativi).",
+      );
+      return;
+    }
+    const delay = Math.min(8000, 1000 * Math.pow(2, this._reconnectAttempts));
+    this._reconnectAttempts++;
+    this._clearReconnectTimer();
+    console.log(
+      `[NetEngine] Riconnessione automatica tra ${delay}ms (tentativo ${this._reconnectAttempts}/5)`,
+    );
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this.manualDisconnect) return;
+      // Riapre il socket verso lo stesso URL: onopen ripete la registrazione
+      // 'init' e riavvia i timer. `_isReconnecting` impedisce che il contatore
+      // dei tentativi venga azzerato ad ogni retry.
+      this._isReconnecting = true;
+      this.connect(this._wsUrl);
+    }, delay);
+  },
+
+  // Converte un valore in numero finito; in caso contrario restituisce il
+  // fallback. Protegge da pacchetti corrotti o malevoli (NaN, Infinity,
+  // stringhe) che altrimenti corromperebbero in modo permanente i piloti remoti.
+  toFinite(v, fallback) {
+    return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  },
+
+  // Copia le impostazioni della stanza ricevute dal server nello stato locale.
+  _applyRoomSettings(settings) {
+    if (!settings) return;
+    if (settings.trackId) this.selectedTrackId = settings.trackId;
+    if (typeof settings.laps === "number") this.selectedLaps = settings.laps;
+    if (settings.gameMode) this.roomGameMode = settings.gameMode;
+    if (settings.championship) this.championshipData = settings.championship;
+  },
+
+  resumeActiveRace(race) {
+    if (
+      !race ||
+      !race.raceId ||
+      race.status === "finished" ||
+      typeof RaceEngine === "undefined"
+    ) {
+      return;
+    }
+    if (RaceEngine.isActive && RaceEngine.networkRaceId === race.raceId) {
+      return;
+    }
+    this.currentRaceId = race.raceId;
+    RaceEngine.startLanSession(
+      race.trackId || "monza",
+      Array.isArray(race.players) ? race.players : Object.values(this.lobbyPlayers),
+      race.laps || 3,
+      race.countdownDuration || 4.5,
+      race.raceStartTime,
+      Date.now(),
+      {
+        gameMode: race.gameMode || "single_race",
+        championship: race.championship || null,
+        gridSlots: race.gridSlots || null,
+        enableBots: race.enableBots !== false,
+        raceId: race.raceId,
+      },
+    );
   },
 
   get myId() {
@@ -185,6 +336,7 @@ const NetworkEngine = {
     this.send({
       type: "checkpoint_pass",
       id: this.myPlayerId,
+      raceId: this.currentRaceId,
       lap: lap,
       sampleIndex: sampleIndex,
       totalProgress: totalProgress,
@@ -195,6 +347,7 @@ const NetworkEngine = {
     this.send({
       type: "finish_race",
       id: this.myPlayerId,
+      raceId: this.currentRaceId,
       finishTime: finishTime,
       bestLapTime: bestLapTime,
     });
@@ -211,10 +364,24 @@ const NetworkEngine = {
     this.send("update_profile", Object.assign({ id: this.myPlayerId }, data));
   },
 
+  removeRemoteRacersFromRace() {
+    if (
+      typeof RaceEngine === "undefined" ||
+      !Array.isArray(RaceEngine.allRacers)
+    ) {
+      return;
+    }
+    RaceEngine.allRacers = RaceEngine.allRacers.filter(
+      (racer) => !racer.isRemotePlayer,
+    );
+  },
+
   sendRoomUpdate(data) {
     if (!this.isConnected || !this.isHost) return;
     if (data.trackId) this.selectedTrackId = data.trackId;
     if (typeof data.laps === "number") this.selectedLaps = data.laps;
+    if (data.gameMode) this.roomGameMode = data.gameMode;
+    if (data.championship) this.championshipData = data.championship;
     this.send("update_room", data);
   },
 
@@ -239,7 +406,7 @@ const NetworkEngine = {
       case "init": {
         this.myPlayerId = msg.id;
         this.hostId = msg.hostId || msg.id;
-        this.isHost = (this.myPlayerId === this.hostId);
+        this.isHost = this.myPlayerId === this.hostId;
         this.lobbyPlayers = msg.players || {};
         this.lobbyPlayers[this.myPlayerId] = {
           id: this.myPlayerId,
@@ -249,12 +416,14 @@ const NetworkEngine = {
           ping: this.ping || 0,
         };
 
-        if (msg.roomSettings) {
-          if (msg.roomSettings.trackId) this.selectedTrackId = msg.roomSettings.trackId;
-          if (typeof msg.roomSettings.laps === "number") this.selectedLaps = msg.roomSettings.laps;
+        this._applyRoomSettings(msg.roomSettings);
+        if (msg.activeRace && msg.activeRace.raceId) {
+          this.currentRaceId = msg.activeRace.raceId;
         }
 
-        console.log(`[NetEngine] Registrato con ID locale: ${this.myPlayerId}. Host ID: ${this.hostId} (isHost: ${this.isHost})`);
+        console.log(
+          `[NetEngine] Registrato con ID locale: ${this.myPlayerId}. Host ID: ${this.hostId} (isHost: ${this.isHost})`,
+        );
 
         // Spawna tutte le auto già presenti nella stanza
         if (msg.players) {
@@ -264,6 +433,9 @@ const NetworkEngine = {
             }
           }
         }
+        if (msg.activeRace && msg.activeRace.status !== "finished") {
+          this.resumeActiveRace(msg.activeRace);
+        }
         this.updateDiagHUD();
         if (typeof UI !== "undefined") UI.updateLanLobbyUI();
         break;
@@ -272,17 +444,22 @@ const NetworkEngine = {
       // --- EVENTO 2: 'playerJoined' (nuovo client entrato nella stanza) ---
       case "playerJoined": {
         if (msg.player && msg.player.id !== this.myPlayerId) {
-          console.log(`[NetEngine] Nuovo giocatore rilevato: ${msg.player.name} (${msg.player.id})`);
+          console.log(
+            `[NetEngine] Nuovo giocatore rilevato: ${msg.player.name} (${msg.player.id})`,
+          );
           this.lobbyPlayers[msg.player.id] = msg.player;
           if (msg.hostId) {
             this.hostId = msg.hostId;
-            this.isHost = (this.myPlayerId === this.hostId);
+            this.isHost = this.myPlayerId === this.hostId;
           }
           this.spawnPlayer(msg.player);
           this.updateDiagHUD();
           if (typeof UI !== "undefined") {
             UI.updateLanLobbyUI();
-            UI.showToast(`${msg.player.name} è entrato nella stanza LAN!`, "fa-user-plus");
+            UI.showToast(
+              `${msg.player.name} è entrato nella stanza LAN!`,
+              "fa-user-plus",
+            );
           }
         }
         break;
@@ -295,44 +472,51 @@ const NetworkEngine = {
           if (msg.player.id !== this.myPlayerId) {
             const rem = remotePlayers[msg.player.id];
             if (rem) {
-              rem.name = msg.player.name;
-              rem.color = msg.player.color;
-              rem.carId = msg.player.carId;
-              if (rem.nameSprite && rem.mesh) {
-                rem.mesh.remove(rem.nameSprite);
-                const newSprite = this.createNameplateSprite(rem.name, rem.color);
-                newSprite.position.set(0, 1.85, 0);
-                rem.mesh.add(newSprite);
-                rem.nameSprite = newSprite;
+              const carChanged = Boolean(
+                msg.player.carId && rem.carId !== msg.player.carId,
+              );
+              const colorChanged = Boolean(
+                msg.player.color && rem.color !== msg.player.color,
+              );
+              const nameChanged = Boolean(
+                msg.player.name && rem.name !== msg.player.name,
+              );
+
+              if (carChanged || colorChanged || nameChanged || !rem.mesh) {
+                this.rebuildRemoteMesh(
+                  msg.player.id,
+                  msg.player.carId || rem.carId,
+                  msg.player.color || rem.color,
+                  msg.player.name || rem.name,
+                );
               }
+            } else {
+              this.spawnPlayer(msg.player);
             }
           }
         }
         if (msg.hostId) {
           this.hostId = msg.hostId;
-          this.isHost = (this.myPlayerId === this.hostId);
+          this.isHost = this.myPlayerId === this.hostId;
         }
-        if (msg.roomSettings) {
-          if (msg.roomSettings.trackId) this.selectedTrackId = msg.roomSettings.trackId;
-          if (typeof msg.roomSettings.laps === "number") this.selectedLaps = msg.roomSettings.laps;
-        }
+        this._applyRoomSettings(msg.roomSettings);
         if (typeof UI !== "undefined") UI.updateLanLobbyUI();
         break;
       }
 
-      // --- EVENTO 4: 'roomUpdated' (l'host ha cambiato circuito o numero di giri) ---
+      // --- EVENTO 4: 'roomUpdated' (l'host ha cambiato circuito o numero di giri o modalità torneo) ---
       case "roomUpdated": {
-        if (msg.roomSettings) {
-          if (msg.roomSettings.trackId) this.selectedTrackId = msg.roomSettings.trackId;
-          if (typeof msg.roomSettings.laps === "number") this.selectedLaps = msg.roomSettings.laps;
-        }
+        this._applyRoomSettings(msg.roomSettings);
         if (msg.hostId) {
           this.hostId = msg.hostId;
-          this.isHost = (this.myPlayerId === this.hostId);
+          this.isHost = this.myPlayerId === this.hostId;
         }
         if (typeof UI !== "undefined") {
           UI.updateLanLobbyUI();
-          UI.showToast("L'Host ha aggiornato le impostazioni del circuito", "fa-sliders");
+          UI.showToast(
+            "L'Host ha aggiornato le impostazioni della stanza",
+            "fa-sliders",
+          );
         }
         break;
       }
@@ -340,6 +524,25 @@ const NetworkEngine = {
       // --- EVENTO 5: 'update' (trasformazioni fisiche & telemetria ricevute in broadcast selettivo) ---
       case "update": {
         if (msg.id === this.myPlayerId) return; // ignora noi stessi
+        if (
+          msg.raceId &&
+          this.currentRaceId &&
+          msg.raceId !== this.currentRaceId
+        ) {
+          return;
+        }
+
+        // Se siamo un guest client in Gran Premio LAN e l'Host ci ha inviato la telemetria delle CPU
+        if (
+          Array.isArray(msg.aiList) &&
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.isActive &&
+          (RaceEngine.isLanChampionship ||
+            RaceEngine.mode === "lan_championship") &&
+          !this.isHost
+        ) {
+          RaceEngine.applyLanAITelemetry(msg.aiList);
+        }
 
         let p = remotePlayers[msg.id];
         if (!p) {
@@ -351,27 +554,39 @@ const NetworkEngine = {
         if (p) {
           const nowLocal = performance.now();
           p.lastPacketLocalTime = nowLocal;
-          p.lastPacketServerTime = typeof msg.t === "number" ? msg.t : this.getServerTime();
+          p.lastPacketServerTime =
+            typeof msg.t === "number" ? msg.t : this.getServerTime();
 
-          // Coordinate target ricevute
-          p.targetPos.set(msg.x, msg.y, msg.z);
-          p.targetRotY = msg.rotY;
-          p.targetSpeed = msg.speed || 0;
+          // Coordinate target ricevute (bonificate: valori non finiti/stringhe
+          // vengono scartati mantenendo l'ultimo target valido).
+          p.targetPos.set(
+            this.toFinite(msg.x, p.targetPos.x),
+            this.toFinite(msg.y, p.targetPos.y),
+            this.toFinite(msg.z, p.targetPos.z),
+          );
+          p.targetRotY = this.toFinite(msg.rotY, p.targetRotY);
+          p.targetSpeed = this.toFinite(msg.speed, p.targetSpeed || 0);
           p.isDrifting = Boolean(msg.isDrifting);
 
           // Vettori di velocità lineare e angolare per Dead Reckoning
-          if (typeof msg.vx === "number" && typeof msg.vz === "number") {
-            p.velocity.set(msg.vx, msg.vy || 0, msg.vz);
+          if (Number.isFinite(msg.vx) && Number.isFinite(msg.vz)) {
+            p.velocity.set(
+              this.toFinite(msg.vx, 0),
+              this.toFinite(msg.vy, 0),
+              this.toFinite(msg.vz, 0),
+            );
           } else {
-            const heading = msg.rotY || 0;
-            const spd = msg.speed || 0;
+            const heading = this.toFinite(msg.rotY, p.targetRotY);
+            const spd = this.toFinite(msg.speed, 0);
             p.velocity.set(Math.sin(heading) * spd, 0, Math.cos(heading) * spd);
           }
 
-          p.yawRate = typeof msg.yawRate === "number" ? msg.yawRate : 0;
+          p.yawRate = this.toFinite(msg.yawRate, 0);
           if (typeof msg.lap === "number") p.lap = msg.lap;
-          if (typeof msg.sampleIndex === "number") p.sampleIndex = msg.sampleIndex;
-          if (typeof msg.totalProgress === "number") p.totalProgress = msg.totalProgress;
+          if (typeof msg.sampleIndex === "number")
+            p.sampleIndex = msg.sampleIndex;
+          if (typeof msg.totalProgress === "number")
+            p.totalProgress = msg.totalProgress;
           if (typeof msg.curTime === "number") p.curTime = msg.curTime;
           if (msg.bestTime) p.bestTime = msg.bestTime;
           if (typeof msg.finished === "boolean") p.finished = msg.finished;
@@ -379,17 +594,24 @@ const NetworkEngine = {
         }
 
         // Sincronizza lo stato in tempo reale della vettura avversaria in RaceEngine
-        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
-          const racer = RaceEngine.allRacers.find(r => r.id === msg.id);
+        if (
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.isActive &&
+          RaceEngine.allRacers
+        ) {
+          const racer = RaceEngine.allRacers.find((r) => r.id === msg.id);
           if (racer) {
-            if (typeof msg.totalProgress === "number") racer.totalProgress = msg.totalProgress;
+            if (typeof msg.totalProgress === "number")
+              racer.totalProgress = msg.totalProgress;
             if (typeof msg.lap === "number") racer.lap = msg.lap;
-            if (typeof msg.sampleIndex === "number") racer.sampleIndex = msg.sampleIndex;
-            if (typeof msg.curTime === "number") racer.currentLapTime = msg.curTime;
+            if (typeof msg.sampleIndex === "number")
+              racer.sampleIndex = msg.sampleIndex;
+            if (typeof msg.curTime === "number")
+              racer.currentLapTime = msg.curTime;
             if (msg.bestTime) racer.bestLapTime = msg.bestTime;
             if (msg.finished) racer.finished = true;
             if (msg.finishTime) racer.finishTime = msg.finishTime;
-            racer.speed = msg.speed || 0;
+            racer.speed = this.toFinite(msg.speed, 0);
           }
         }
         break;
@@ -398,25 +620,41 @@ const NetworkEngine = {
       // --- EVENTO 6: 'playerLeft' (giocatore disconnesso, distruggi mesh) ---
       case "playerLeft": {
         console.log(`[NetEngine] Giocatore uscito: ${msg.id}`);
-        const leftPlayerName = (this.lobbyPlayers[msg.id] && this.lobbyPlayers[msg.id].name) || `Pilota ${msg.id}`;
+        const leftPlayerName =
+          (this.lobbyPlayers[msg.id] && this.lobbyPlayers[msg.id].name) ||
+          `Pilota ${msg.id}`;
         delete this.lobbyPlayers[msg.id];
         this.removePlayer(msg.id);
 
-        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
-          RaceEngine.allRacers = RaceEngine.allRacers.filter(r => r.id !== msg.id);
+        if (
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.isActive &&
+          RaceEngine.allRacers
+        ) {
+          RaceEngine.allRacers = RaceEngine.allRacers.filter(
+            (r) => r.id !== msg.id,
+          );
           const posTotal = document.getElementById("hud-pos-total");
-          if (posTotal) posTotal.textContent = `/ ${RaceEngine.allRacers.length}`;
+          if (posTotal)
+            posTotal.textContent = `/ ${RaceEngine.allRacers.length}`;
           if (typeof UI !== "undefined") {
-            UI.showToast(`${leftPlayerName} ha abbandonato la gara`, "fa-user-minus");
+            UI.showToast(
+              `${leftPlayerName} ha abbandonato la gara`,
+              "fa-user-minus",
+            );
           }
         }
 
         if (msg.hostId) {
-          const becameHost = (this.hostId !== msg.hostId && msg.hostId === this.myPlayerId);
+          const becameHost =
+            this.hostId !== msg.hostId && msg.hostId === this.myPlayerId;
           this.hostId = msg.hostId;
-          this.isHost = (this.myPlayerId === this.hostId);
+          this.isHost = this.myPlayerId === this.hostId;
           if (becameHost && typeof UI !== "undefined") {
-            UI.showToast("L'Host precedente si è disconnesso. Ora SEI TU l'Host della stanza!", "fa-crown");
+            UI.showToast(
+              "L'Host precedente si è disconnesso. Ora SEI TU l'Host della stanza!",
+              "fa-crown",
+            );
           }
         }
         this.updateDiagHUD();
@@ -428,13 +666,20 @@ const NetworkEngine = {
       case "pong": {
         const nowLocal = Date.now();
         const nowPerf = performance.now();
-        const rtt = Math.max(0, msg.perf0 ? (nowPerf - msg.perf0) : (msg.t0 ? (nowLocal - msg.t0) : (nowPerf - (msg.clientTime || 0))));
+        const rtt = Math.max(
+          0,
+          msg.perf0
+            ? nowPerf - msg.perf0
+            : msg.t0
+              ? nowLocal - msg.t0
+              : nowPerf - (msg.clientTime || 0),
+        );
         this.ping = Math.round(rtt);
 
         // Algoritmo NTP per sincronizzazione orologio al millisecondo
         if (typeof msg.serverTime === "number") {
           // Stima dell'ora del server al momento della ricezione su questo client
-          const estimatedServerNow = msg.serverTime + (rtt / 2);
+          const estimatedServerNow = msg.serverTime + rtt / 2;
           const sampleOffset = estimatedServerNow - nowLocal;
 
           if (this.clockOffset === null) {
@@ -444,7 +689,8 @@ const NetworkEngine = {
             // Campioni con RTT più basso hanno meno jitter e asimmetria: diamo maggior peso
             const weight = rtt <= (this.bestRtt || rtt) ? 0.35 : 0.15;
             if (rtt < (this.bestRtt || Infinity)) this.bestRtt = rtt;
-            this.clockOffset = this.clockOffset * (1 - weight) + sampleOffset * weight;
+            this.clockOffset =
+              this.clockOffset * (1 - weight) + sampleOffset * weight;
           }
         }
 
@@ -459,11 +705,15 @@ const NetworkEngine = {
       // --- START_RACE: semaforo sincronizzato per tutti i client ---
       case "start_race": {
         if (typeof RaceEngine !== "undefined") {
+          if (msg.raceId && msg.raceId === this.currentRaceId && RaceEngine.isActive) {
+            break;
+          }
+          this.currentRaceId = msg.raceId || `legacy_${Date.now()}`;
           let playersList = [];
           if (Array.isArray(msg.players) && msg.players.length > 0) {
             playersList = msg.players;
           } else {
-            playersList = Object.values(remotePlayers).map(r => ({
+            playersList = Object.values(remotePlayers).map((r) => ({
               id: r.id,
               name: r.name,
               color: r.color,
@@ -484,7 +734,14 @@ const NetworkEngine = {
             msg.laps || 3,
             msg.countdownDuration || 4.5,
             msg.raceStartTime,
-            msg.serverTime
+            msg.serverTime,
+            {
+              gameMode: msg.gameMode || "single_race",
+              championship: msg.championship || null,
+              gridSlots: msg.gridSlots || null,
+              enableBots: msg.enableBots !== false,
+              raceId: this.currentRaceId,
+            },
           );
         }
         break;
@@ -492,8 +749,19 @@ const NetworkEngine = {
 
       // --- CHECKPOINT_PASS: sincronizzazione classifica ---
       case "checkpoint_pass": {
-        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
-          const racer = RaceEngine.allRacers.find(r => r.id === msg.id);
+        if (
+          msg.raceId &&
+          this.currentRaceId &&
+          msg.raceId !== this.currentRaceId
+        ) {
+          break;
+        }
+        if (
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.isActive &&
+          RaceEngine.allRacers
+        ) {
+          const racer = RaceEngine.allRacers.find((r) => r.id === msg.id);
           if (racer) {
             racer.lap = msg.lap;
             racer.sampleIndex = msg.sampleIndex;
@@ -505,16 +773,35 @@ const NetworkEngine = {
 
       // --- FINISH_RACE: traguardo avversario ---
       case "finish_race": {
-        if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.allRacers) {
-          const racer = RaceEngine.allRacers.find(r => r.id === msg.id);
+        if (
+          msg.raceId &&
+          this.currentRaceId &&
+          msg.raceId !== this.currentRaceId
+        ) {
+          break;
+        }
+        if (
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.isActive &&
+          RaceEngine.allRacers
+        ) {
+          const racer = RaceEngine.allRacers.find((r) => r.id === msg.id);
           if (racer) {
-            racer.finished = true;
-            racer.finishTime = msg.finishTime;
             if (msg.bestLapTime) racer.bestLapTime = msg.bestLapTime;
+            if (typeof RaceEngine.recordCarFinish === "function") {
+              RaceEngine.recordCarFinish(racer, msg.finishTime);
+            } else {
+              racer.finished = true;
+              racer.finishTime = msg.finishTime;
+            }
           }
           if (typeof UI !== "undefined") {
-            const driverName = (racer && racer.driverName) || `Pilota ${msg.id}`;
-            UI.showToast(`🏁 ${driverName} ha tagliato il traguardo!`, "fa-flag-checkered");
+            const driverName =
+              (racer && racer.driverName) || `Pilota ${msg.id}`;
+            UI.showToast(
+              `🏁 ${driverName} ha tagliato il traguardo!`,
+              "fa-flag-checkered",
+            );
           }
         }
         break;
@@ -525,20 +812,131 @@ const NetworkEngine = {
   // ---------------------------------------------------------------------------
   // 3. CREAZIONE & RIMOZIONE DINAMICA DELLE MESH 3D
   // ---------------------------------------------------------------------------
+  disposeRemoteMesh(mesh) {
+    if (!mesh || typeof mesh.traverse !== "function") return;
+    const sharedGeometries = new Set(
+      Object.values(ProceduralAssets.geoCache || {}),
+    );
+    const sharedMaterials = new Set(
+      Object.values(ProceduralAssets.sharedMaterials || {}),
+    );
+    mesh.traverse((child) => {
+      if (child.geometry && !sharedGeometries.has(child.geometry)) {
+        child.geometry.dispose();
+      }
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : child.material
+          ? [child.material]
+          : [];
+      materials.forEach((material) => {
+        if (!sharedMaterials.has(material)) {
+          if (material.map && material.map.dispose) material.map.dispose();
+          material.dispose();
+        }
+      });
+    });
+  },
+
+  rebuildRemoteMesh(playerId, carId, color, name) {
+    const p = remotePlayers[playerId];
+    if (!p) return;
+
+    const carConfig = CAR_CATALOG.find((c) => c.id === carId) || CAR_CATALOG[0];
+    const colorHex = color
+      ? parseInt(String(color).replace("#", "0x"), 16)
+      : carConfig.colorHex;
+
+    // Rimuovi la vecchia mesh Three.js dalla scena e rilascia le risorse grafiche
+    if (p.mesh) {
+      if (GameApp.scene) {
+        GameApp.scene.remove(p.mesh);
+      }
+      this.disposeRemoteMesh(p.mesh);
+    }
+
+    // Costruisci la nuova mesh 3D specifica del modello d'auto selezionato
+    const newMesh = ProceduralAssets.buildCarMesh(carConfig, colorHex);
+    const curPos =
+      p.targetPos || (p.mesh ? p.mesh.position : new THREE.Vector3());
+    const curRotY =
+      typeof p.targetRotY === "number"
+        ? p.targetRotY
+        : p.mesh
+          ? p.mesh.rotation.y
+          : 0;
+
+    newMesh.position.copy(curPos);
+    newMesh.rotation.y = curRotY;
+
+    // Aggiungi targhetta con il Nickname 3D
+    const newSprite = this.createNameplateSprite(
+      name || p.name || playerId,
+      color || p.color || "#00f0ff",
+    );
+    newSprite.position.set(0, 1.85, 0);
+    newMesh.add(newSprite);
+
+    if (GameApp.scene) {
+      GameApp.scene.add(newMesh);
+    }
+
+    p.mesh = newMesh;
+    p.nameSprite = newSprite;
+    p.carId = carId;
+    p.color = color || p.color;
+    p.name = name || p.name;
+
+    // Se una gara è attiva, aggiorna anche la referenza in RaceEngine.allRacers
+    if (
+      typeof RaceEngine !== "undefined" &&
+      RaceEngine.isActive &&
+      RaceEngine.allRacers
+    ) {
+      const racer = RaceEngine.allRacers.find((r) => r.id === playerId);
+      if (racer) {
+        racer.mesh = newMesh;
+        racer.carConfig = carConfig;
+        racer.teamColorHex = colorHex;
+        const rId = carConfig.id;
+        racer.halfLength =
+          rId === "hypercar"
+            ? 2.4
+            : rId === "muscle"
+              ? 2.35
+              : rId === "hatchback"
+                ? 2.15
+                : 2.3;
+        racer.halfWidth =
+          rId === "hypercar" ? 1.05 : rId === "hatchback" ? 0.98 : 1.02;
+        const rMass = (carConfig.physics && carConfig.physics.mass) || 1200;
+        racer.mass = rMass;
+        racer.inertia =
+          (1 / 12) *
+          rMass *
+          ((2 * racer.halfWidth) ** 2 + (2 * racer.halfLength) ** 2);
+      }
+    }
+
+    console.log(
+      `[NetEngine] Mesh 3D aggiornata con successo per ${playerId}: ${carConfig.name} (${color})`,
+    );
+  },
+
   spawnPlayer(data) {
     if (!data || !data.id || data.id === this.myPlayerId) return;
 
-    const initX = typeof data.x === "number" ? data.x : 0;
-    const initY = typeof data.y === "number" ? data.y : 0;
-    const initZ = typeof data.z === "number" ? data.z : 0;
-    const initRotY = typeof data.rotY === "number" ? data.rotY : 0;
-    const initSpeed = typeof data.speed === "number" ? data.speed : 0;
-    const initVx = typeof data.vx === "number" ? data.vx : (Math.sin(initRotY) * initSpeed);
-    const initVy = typeof data.vy === "number" ? data.vy : 0;
-    const initVz = typeof data.vz === "number" ? data.vz : (Math.cos(initRotY) * initSpeed);
-    const initYawRate = typeof data.yawRate === "number" ? data.yawRate : 0;
+    const initX = this.toFinite(data.x, 0);
+    const initY = this.toFinite(data.y, 0);
+    const initZ = this.toFinite(data.z, 0);
+    const initRotY = this.toFinite(data.rotY, 0);
+    const initSpeed = this.toFinite(data.speed, 0);
+    const initVx = this.toFinite(data.vx, Math.sin(initRotY) * initSpeed);
+    const initVy = this.toFinite(data.vy, 0);
+    const initVz = this.toFinite(data.vz, Math.cos(initRotY) * initSpeed);
+    const initYawRate = this.toFinite(data.yawRate, 0);
 
-    // Se esiste già, riposiziona
+    // Se esiste già, aggiorna posizione e verifica se la mesh d'auto necessita di essere ricostruita
     if (remotePlayers[data.id]) {
       const p = remotePlayers[data.id];
       p.targetPos.set(initX, initY, initZ);
@@ -547,7 +945,19 @@ const NetworkEngine = {
       p.yawRate = initYawRate;
       p.targetSpeed = initSpeed;
       p.lastPacketLocalTime = performance.now();
-      if (p.mesh && GameApp.scene && p.mesh.parent !== GameApp.scene) {
+
+      const carChanged = Boolean(data.carId && p.carId !== data.carId);
+      const colorChanged = Boolean(data.color && p.color !== data.color);
+      const nameChanged = Boolean(data.name && p.name !== data.name);
+
+      if (carChanged || colorChanged || nameChanged || !p.mesh) {
+        this.rebuildRemoteMesh(
+          data.id,
+          data.carId || p.carId || "hatchback",
+          data.color || p.color || "#00f0ff",
+          data.name || p.name,
+        );
+      } else if (p.mesh && GameApp.scene && p.mesh.parent !== GameApp.scene) {
         GameApp.scene.add(p.mesh);
       }
       return;
@@ -559,14 +969,17 @@ const NetworkEngine = {
       ? parseInt(String(data.color).replace("#", "0x"), 16)
       : carConfig.colorHex;
 
-    // Crea mesh 3D completa e distinta con il colore dell'avversario
+    // Crea mesh 3D completa e distinta con il modello e colore dell'avversario
     const carMesh = ProceduralAssets.buildCarMesh(carConfig, colorHex);
 
     carMesh.position.set(initX, initY, initZ);
     carMesh.rotation.y = initRotY;
 
     // Aggiungi targhetta con il Nickname 3D (Billboard Canvas Sprite)
-    const nameSprite = this.createNameplateSprite(data.name || data.id, data.color || "#00f0ff");
+    const nameSprite = this.createNameplateSprite(
+      data.name || data.id,
+      data.color || "#00f0ff",
+    );
     nameSprite.position.set(0, 1.85, 0);
     carMesh.add(nameSprite);
 
@@ -592,7 +1005,8 @@ const NetworkEngine = {
       // Dead reckoning & smoothing a delta-time indipendente
       extrapolatedPos: new THREE.Vector3(initX, initY, initZ),
       lastPacketLocalTime: performance.now(),
-      lastPacketServerTime: typeof data.t === "number" ? data.t : this.getServerTime(),
+      lastPacketServerTime:
+        typeof data.t === "number" ? data.t : this.getServerTime(),
       trackPitch: 0,
       trackRoll: 0,
       sampleIndex: data.sampleIndex || 0,
@@ -600,7 +1014,9 @@ const NetworkEngine = {
       totalProgress: data.totalProgress || 0,
     };
 
-    console.log(`[NetEngine] Mesh 3D istanziata in scena per: ${data.name || data.id}`);
+    console.log(
+      `[NetEngine] Mesh 3D istanziata in scena per: ${data.name || data.id} [${carConfig.name}]`,
+    );
   },
 
   createNameplateSprite(nickname, accentColor) {
@@ -641,13 +1057,7 @@ const NetworkEngine = {
     if (p) {
       if (p.mesh && GameApp.scene) {
         GameApp.scene.remove(p.mesh);
-        p.mesh.traverse((obj) => {
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) {
-            if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-            else obj.material.dispose();
-          }
-        });
+        this.disposeRemoteMesh(p.mesh);
       }
       delete remotePlayers[id];
     }
@@ -664,69 +1074,181 @@ const NetworkEngine = {
   // ---------------------------------------------------------------------------
   startTickLoop() {
     this.stopTickLoop();
+    this._tickCount = 0;
+    this._lastSentState = null;
+    this._applyNetworkTick();
+  },
 
-    // 33 ms = circa 30 Hz
-    this.sendTimer = setInterval(() => {
-      if (!this.isConnected || !this.myPlayerId) return;
+  // Frequenza di invio adattiva: con più piloti inviamo meno pacchetti al secondo.
+  // Il ricevente interpola con dead-reckoning, quindi non si notano differenze.
+  getDesiredTickMs() {
+    const remotes =
+      typeof remotePlayers !== "undefined" && remotePlayers
+        ? Object.keys(remotePlayers).length
+        : 0;
+    const players = 1 + remotes;
+    if (players >= 6) return 50; // 20 Hz
+    if (players >= 4) return 42; // ~24 Hz
+    return 33; // 30 Hz
+  },
 
-      // Recupera la vettura locale attiva
-      let localX = 0, localY = 0, localZ = 0, localRotY = 0, localSpeed = 0, localDrift = false;
-      let localVx = 0, localVy = 0, localVz = 0, localYawRate = 0;
-      let localLap = 1, localSampleIndex = 0, localProgress = 0, localCurTime = 0, localBestTime = null, localFinished = false, localFinishTime = 0;
+  _applyNetworkTick() {
+    const desired = this.getDesiredTickMs();
+    if (this.sendTimer && this._tickMs === desired) return;
+    if (this.sendTimer) clearInterval(this.sendTimer);
+    this._tickMs = desired;
+    this.sendTimer = setInterval(() => this.sendNetworkTick(), desired);
+  },
 
-      if (typeof RaceEngine !== "undefined" && RaceEngine.isActive && RaceEngine.player) {
-        const p = RaceEngine.player;
-        localX = p.position.x;
-        localY = p.position.y;
-        localZ = p.position.z;
-        localRotY = p.heading + (p.driftAngle || 0) * 0.62;
-        localSpeed = p.speed || 0;
-        localDrift = Math.abs(p.driftAngle || 0) > 0.15;
-        localVx = typeof p.vx === "number" ? p.vx : (Math.sin(p.heading) * localSpeed);
-        localVy = typeof p.vy === "number" ? p.vy : 0;
-        localVz = typeof p.vz === "number" ? p.vz : (Math.cos(p.heading) * localSpeed);
-        localYawRate = typeof p.yawRate === "number" ? p.yawRate : 0;
-        localLap = p.lap || 1;
-        localSampleIndex = p.sampleIndex || 0;
-        localProgress = typeof p.totalProgress === "number" ? p.totalProgress : 0;
-        localCurTime = p.currentLapTime || 0;
-        localBestTime = p.bestLapTime || null;
-        localFinished = Boolean(p.finished);
-        localFinishTime = p.finishTime || 0;
-      } else if (typeof GameApp !== "undefined" && GameApp.showroomCarMesh) {
-        const m = GameApp.showroomCarMesh;
-        localX = m.position.x;
-        localY = m.position.y;
-        localZ = m.position.z;
-        localRotY = m.rotation.y;
-      } else {
-        return;
-      }
+  sendNetworkTick() {
+    if (!this.isConnected || !this.myPlayerId) return;
 
-      // Invia pacchetto 'update' di trasformazione fisica, vettori velocità e telemetria con timestamp NTP
-      this.send({
-        type: "update",
-        id: this.myPlayerId,
-        t: this.getServerTime(),
-        x: Number(localX.toFixed(2)),
-        y: Number(localY.toFixed(2)),
-        z: Number(localZ.toFixed(2)),
-        vx: Number(localVx.toFixed(2)),
-        vy: Number(localVy.toFixed(2)),
-        vz: Number(localVz.toFixed(2)),
-        rotY: Number(localRotY.toFixed(3)),
-        yawRate: Number(localYawRate.toFixed(3)),
-        speed: Number(localSpeed.toFixed(2)),
-        isDrifting: localDrift,
-        lap: localLap,
-        sampleIndex: localSampleIndex,
-        totalProgress: Number(localProgress.toFixed(4)),
-        curTime: Math.round(localCurTime),
-        bestTime: localBestTime,
-        finished: localFinished,
-        finishTime: localFinishTime,
-      });
-    }, 33);
+    this._tickCount = (this._tickCount || 0) + 1;
+    // Riadatta la frequenza se cambia il numero di piloti (ogni ~20 tick)
+    if (this._tickCount % 20 === 0) this._applyNetworkTick();
+
+    // Recupera la vettura locale attiva
+    let localX = 0,
+      localY = 0,
+      localZ = 0,
+      localRotY = 0,
+      localSpeed = 0,
+      localDrift = false;
+    let localVx = 0,
+      localVy = 0,
+      localVz = 0,
+      localYawRate = 0;
+    let localLap = 1,
+      localSampleIndex = 0,
+      localProgress = 0,
+      localCurTime = 0,
+      localBestTime = null,
+      localFinished = false,
+      localFinishTime = 0;
+
+    if (
+      typeof RaceEngine !== "undefined" &&
+      RaceEngine.isActive &&
+      RaceEngine.player
+    ) {
+      const p = RaceEngine.player;
+      localX = p.position.x;
+      localY = p.position.y;
+      localZ = p.position.z;
+      localRotY = p.heading + (p.driftAngle || 0) * 0.62;
+      localSpeed = p.speed || 0;
+      localDrift = Math.abs(p.driftAngle || 0) > 0.15;
+      localVx =
+        typeof p.vx === "number" ? p.vx : Math.sin(p.heading) * localSpeed;
+      localVy = typeof p.vy === "number" ? p.vy : 0;
+      localVz =
+        typeof p.vz === "number" ? p.vz : Math.cos(p.heading) * localSpeed;
+      localYawRate = typeof p.yawRate === "number" ? p.yawRate : 0;
+      localLap = p.lap || 1;
+      localSampleIndex = p.sampleIndex || 0;
+      localProgress =
+        typeof p.totalProgress === "number" ? p.totalProgress : 0;
+      localCurTime = p.currentLapTime || 0;
+      localBestTime = p.bestLapTime || null;
+      localFinished = Boolean(p.finished);
+      localFinishTime = p.finishTime || 0;
+    } else if (typeof GameApp !== "undefined" && GameApp.showroomCarMesh) {
+      const m = GameApp.showroomCarMesh;
+      localX = m.position.x;
+      localY = m.position.y;
+      localZ = m.position.z;
+      localRotY = m.rotation.y;
+    } else {
+      return;
+    }
+
+    // Telemetria piloti IA ufficiali: l'Host la trasmette ogni 3° tick (~10 Hz),
+    // sufficiente agli ospiti per interpolarla. Inviarla a 30 Hz era inutile e
+    // appesantiva pacchetti, JSON e banda (soprattutto su WiFi).
+    const sendAi = this.isHost && this._tickCount % 3 === 0;
+    let aiTelemetry = null;
+    if (
+      sendAi &&
+      typeof RaceEngine !== "undefined" &&
+      RaceEngine.isActive &&
+      (RaceEngine.isLanChampionship ||
+        RaceEngine.mode === "lan_championship") &&
+      Array.isArray(RaceEngine.aiCars) &&
+      RaceEngine.aiCars.length > 0
+    ) {
+      aiTelemetry = RaceEngine.aiCars.map((ai) => ({
+        id: ai.id,
+        x: Number(ai.position.x.toFixed(2)),
+        y: Number(ai.position.y.toFixed(2)),
+        z: Number(ai.position.z.toFixed(2)),
+        rotY: Number(ai.heading.toFixed(3)),
+        speed: Number((ai.speed || 0).toFixed(2)),
+        lap: ai.lap || 1,
+        sampleIndex: ai.sampleIndex || 0,
+        totalProgress: Number((ai.totalProgress || 0).toFixed(4)),
+        curTime: Math.round(ai.currentLapTime || 0),
+        bestTime: ai.bestLapTime || null,
+        finished: Boolean(ai.finished),
+        finishTime: ai.finishTime || 0,
+        aiStatusTag: ai.aiStatusTag || null,
+      }));
+    }
+
+    // Skip dei pacchetti "fermi" (countdown, parcheggio, post-gara da fermo):
+    // se nulla è cambiato e non c'è telemetria IA da spedire, non occupiamo banda.
+    const prev = this._lastSentState;
+    let changed = !prev;
+    if (prev) {
+      changed =
+        Math.abs(localX - prev.x) > 0.005 ||
+        Math.abs(localY - prev.y) > 0.005 ||
+        Math.abs(localZ - prev.z) > 0.005 ||
+        Math.abs(localRotY - prev.rotY) > 0.002 ||
+        localLap !== prev.lap ||
+        localSampleIndex !== prev.sampleIndex ||
+        localFinished !== prev.finished ||
+        localDrift !== prev.drift ||
+        localBestTime !== prev.bestTime;
+    }
+    if (!changed && !aiTelemetry) return;
+
+    this._lastSentState = {
+      x: localX,
+      y: localY,
+      z: localZ,
+      rotY: localRotY,
+      lap: localLap,
+      sampleIndex: localSampleIndex,
+      finished: localFinished,
+      drift: localDrift,
+      bestTime: localBestTime,
+    };
+
+    // Invia pacchetto 'update' di trasformazione fisica, vettori velocità e telemetria con timestamp NTP
+    this.send({
+      type: "update",
+      id: this.myPlayerId,
+      raceId: this.currentRaceId,
+      t: this.getServerTime(),
+      x: Number(localX.toFixed(2)),
+      y: Number(localY.toFixed(2)),
+      z: Number(localZ.toFixed(2)),
+      vx: Number(localVx.toFixed(2)),
+      vy: Number(localVy.toFixed(2)),
+      vz: Number(localVz.toFixed(2)),
+      rotY: Number(localRotY.toFixed(3)),
+      yawRate: Number(localYawRate.toFixed(3)),
+      speed: Number(localSpeed.toFixed(2)),
+      isDrifting: localDrift,
+      lap: localLap,
+      sampleIndex: localSampleIndex,
+      totalProgress: Number(localProgress.toFixed(4)),
+      curTime: Math.round(localCurTime),
+      bestTime: localBestTime,
+      finished: localFinished,
+      finishTime: localFinishTime,
+      aiList: aiTelemetry,
+    });
   },
 
   stopTickLoop() {
@@ -782,6 +1304,10 @@ const NetworkEngine = {
   update(dt) {
     const safeDt = Math.min(Math.max(dt, 0.001), 0.1);
     const nowLocal = performance.now();
+    // L'allineamento alla superficie (pitch/roll) dei giocatori remoti viene
+    // aggiornato a frame alterni: differenza impercettibile, metà delle query.
+    this._remoteSurfaceFrame = (this._remoteSurfaceFrame || 0) + 1;
+    const doSurface = (this._remoteSurfaceFrame & 1) === 0;
 
     for (const id in remotePlayers) {
       const p = remotePlayers[id];
@@ -793,7 +1319,10 @@ const NetworkEngine = {
 
         // 1. DEAD RECKONING EXTRAPOLATION
         // Tempo trascorso dall'ultimo pacchetto ricevuto (in secondi)
-        const timeSincePacket = Math.max(0, (nowLocal - (p.lastPacketLocalTime || nowLocal)) / 1000);
+        const timeSincePacket = Math.max(
+          0,
+          (nowLocal - (p.lastPacketLocalTime || nowLocal)) / 1000,
+        );
         // Limita l'estrapolazione a max 180ms per evitare proiezioni aberranti in caso di freeze/disconnessione
         const extrapolateTime = Math.min(timeSincePacket, 0.18);
 
@@ -825,22 +1354,53 @@ const NetworkEngine = {
         while (diff > Math.PI) diff -= Math.PI * 2;
         p.mesh.rotation.y += diff * rotBlend;
 
-        // 3. Allineamento rollio e beccheggio alla superficie del tracciato 3D
-        if (typeof RaceEngine !== "undefined" && RaceEngine.getTrackElevationAndNormal && RaceEngine.trackData) {
+        // 3. Allineamento rollio e beccheggio alla superficie del tracciato 3D.
+        // A frame alterni e con la variante senza allocazioni getTrackSurfaceY,
+        // per ridurre CPU e pressione sul Garbage Collector.
+        if (
+          doSurface &&
+          typeof RaceEngine !== "undefined" &&
+          RaceEngine.getTrackSurfaceY &&
+          RaceEngine.trackData
+        ) {
           p.mesh.rotation.order = "YXZ";
           const sinH = Math.sin(p.mesh.rotation.y);
           const cosH = Math.cos(p.mesh.rotation.y);
-          const fSurf = RaceEngine.getTrackElevationAndNormal(p.mesh.position.x + sinH * 1.46, p.mesh.position.z + cosH * 1.46, p.sampleIndex || 0);
-          const rSurf = RaceEngine.getTrackElevationAndNormal(p.mesh.position.x - sinH * 1.46, p.mesh.position.z - cosH * 1.46, p.sampleIndex || 0);
-          const tPitch = -Math.atan2(fSurf.y - rSurf.y, 2.92);
+          const fY = RaceEngine.getTrackSurfaceY(
+            p.mesh.position.x + sinH * 1.46,
+            p.mesh.position.z + cosH * 1.46,
+            p.sampleIndex || 0,
+          );
+          const rY = RaceEngine.getTrackSurfaceY(
+            p.mesh.position.x - sinH * 1.46,
+            p.mesh.position.z - cosH * 1.46,
+            p.sampleIndex || 0,
+          );
+          const tPitch = -Math.atan2(fY - rY, 2.92);
 
-          const rSide = RaceEngine.getTrackElevationAndNormal(p.mesh.position.x + cosH * 0.95, p.mesh.position.z - sinH * 0.95, p.sampleIndex || 0);
-          const lSide = RaceEngine.getTrackElevationAndNormal(p.mesh.position.x - cosH * 0.95, p.mesh.position.z + sinH * 0.95, p.sampleIndex || 0);
-          const tRoll = Math.atan2(rSide.y - lSide.y, 1.90);
+          const rSideY = RaceEngine.getTrackSurfaceY(
+            p.mesh.position.x + cosH * 0.95,
+            p.mesh.position.z - sinH * 0.95,
+            p.sampleIndex || 0,
+          );
+          const lSideY = RaceEngine.getTrackSurfaceY(
+            p.mesh.position.x - cosH * 0.95,
+            p.mesh.position.z + sinH * 0.95,
+            p.sampleIndex || 0,
+          );
+          const tRoll = Math.atan2(rSideY - lSideY, 1.9);
 
           const surfaceBlend = 1.0 - Math.exp(-10.0 * safeDt);
-          p.trackPitch = THREE.MathUtils.lerp(p.trackPitch || 0, tPitch, surfaceBlend);
-          p.trackRoll = THREE.MathUtils.lerp(p.trackRoll || 0, tRoll, surfaceBlend);
+          p.trackPitch = THREE.MathUtils.lerp(
+            p.trackPitch || 0,
+            tPitch,
+            surfaceBlend,
+          );
+          p.trackRoll = THREE.MathUtils.lerp(
+            p.trackRoll || 0,
+            tRoll,
+            surfaceBlend,
+          );
           p.mesh.rotation.x = p.trackPitch;
           p.mesh.rotation.z = p.trackRoll;
         }
@@ -849,15 +1409,18 @@ const NetworkEngine = {
         const ud = p.mesh.userData;
         if (ud) {
           if (ud.wheelMeshes) {
+            const wheels = ud.wheelMeshes;
             const wDelta = (p.targetSpeed / 0.37) * safeDt;
-            ud.wheelMeshes.forEach((w) => {
-              w.rotation.x += wDelta;
-            });
+            for (let i = 0; i < wheels.length; i++) {
+              wheels[i].rotation.x += wDelta;
+            }
           }
           if (ud.exhaustFlames) {
-            ud.exhaustFlames.forEach((f) => {
-              f.visible = p.isDrifting;
-            });
+            const flames = ud.exhaustFlames;
+            const drifting = p.isDrifting;
+            for (let i = 0; i < flames.length; i++) {
+              flames[i].visible = drifting;
+            }
           }
         }
       }
@@ -876,15 +1439,19 @@ const NetworkEngine = {
     }
 
     hud.className =
-      "fixed top-[32vh] left-4 z-40 pointer-events-none glass-panel px-3.5 py-2.5 rounded-2xl border border-white/15 text-[11px] font-racing space-y-1.5 shadow-2xl backdrop-blur-md bg-slate-950/80 transition-all duration-300";
+      "fixed top-[32vh] left-4 z-40 pointer-events-none glass-panel px-3.5 py-2.5 rounded-2xl border border-white/15 text-[11px] font-racing space-y-1.5 shadow-2xl bg-slate-950/80 transition-all duration-300";
 
-    const playersCount = Object.keys(remotePlayers).length + (this.isConnected ? 1 : 0);
+    const playersCount =
+      Object.keys(remotePlayers).length + (this.isConnected ? 1 : 0);
     const connClass = this.isConnected ? "text-emerald-400" : "text-rose-400";
-    const connDot = this.isConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-500";
+    const connDot = this.isConnected
+      ? "bg-emerald-400 animate-pulse"
+      : "bg-rose-500";
     const connText = this.isConnected ? "CONNESSO (LAN)" : "DISCONNESSO";
-    const clockSyncStr = this.clockOffset !== null
-      ? `${this.clockOffset >= 0 ? "+" : ""}${Math.round(this.clockOffset)} ms`
-      : "--";
+    const clockSyncStr =
+      this.clockOffset !== null
+        ? `${this.clockOffset >= 0 ? "+" : ""}${Math.round(this.clockOffset)} ms`
+        : "--";
 
     hud.innerHTML = `
       <div class="flex items-center justify-between gap-3 pb-1 border-b border-white/10">
@@ -911,10 +1478,7 @@ const NetworkEngine = {
   },
 };
 
-// Esponi per compatibilità globale con window e test
-remotePlayers.get = function (id) {
-  return this[id];
-};
-NetworkEngine.remotePlayers = remotePlayers;
-window.remotePlayers = remotePlayers;
+// Espone l'API globale usata dagli altri moduli (UI, RaceEngine).
+// NB: `remotePlayers` resta disponibile come binding globale lessicale
+// (const in cima al file) ed è ciò che raceEngine.js già utilizza.
 window.NetworkEngine = NetworkEngine;

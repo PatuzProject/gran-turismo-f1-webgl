@@ -23,6 +23,20 @@ const GraphicsEngine = {
   brakeDiscMeshes: [],
   proceduralTextures: {},
 
+  // Sistema di qualità grafica: "high" mantiene la resa originale.
+  quality: "high",
+  QUALITY_PRESETS: {
+    high: { pixelRatioCap: 1.5, bloom: true, bloomResolutionScale: 0.5, shadows: true, shadowMapSize: 1024, shadowType: "pcfsoft" },
+    medium: { pixelRatioCap: 1.0, bloom: true, bloomResolutionScale: 0.35, shadows: true, shadowMapSize: 1024, shadowType: "pcf" },
+    low: { pixelRatioCap: 0.85, bloom: false, bloomResolutionScale: 0.0, shadows: false, shadowMapSize: 512, shadowType: "basic" },
+  },
+  // Ultima dimensione viewport nota: serve per ridimensionare composer/bloom
+  // anche quando setQuality() viene chiamato fuori dal resize.
+  _viewportWidth: 0,
+  _viewportHeight: 0,
+  // Metriche di frame (ms di logica update e di render, draw call e triangoli)
+  perf: { updateMs: 0, renderMs: 0, drawCalls: 0, triangles: 0 },
+
   sparkPool: [],
   sparkGroup: null,
   gltfLoader: null,
@@ -42,6 +56,9 @@ const GraphicsEngine = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setPixelRatio(optimalPixelRatio);
+    // Le statistiche vengono azzerate manualmente in render(): il composer
+    // esegue più pass in un solo frame e l'autoReset le perderebbe.
+    renderer.info.autoReset = false;
 
     this.pmremGenerator = new THREE.PMREMGenerator(renderer);
     this.pmremGenerator.compileEquirectangularShader();
@@ -75,11 +92,116 @@ const GraphicsEngine = {
     );
   },
 
+  // ---- Sistema di qualità grafica ----------------------------------------
+
+  getQuality() {
+    return this.quality;
+  },
+
+  setQuality(level, opts) {
+    const valid = level === "high" || level === "medium" || level === "low" ? level : "high";
+    this.quality = valid;
+    this.applyQualitySettings();
+
+    // Persistenza opzionale: se lo storage non è disponibile la qualità resta
+    // comunque valida per la sessione corrente.
+    if (!opts || opts.persist !== false) {
+      try {
+        if (typeof GameApp !== "undefined" && GameApp && GameApp.profile) {
+          GameApp.profile.graphicsQuality = valid;
+          if (typeof StorageManager !== "undefined" && StorageManager && StorageManager.save) {
+            StorageManager.save(GameApp.profile);
+          }
+        }
+      } catch (e) {
+        // Storage non disponibile (es. sessione privata): nessuna azione.
+      }
+    }
+    return valid;
+  },
+
+  _qualityPixelRatio() {
+    const preset = this.QUALITY_PRESETS[this.quality] || this.QUALITY_PRESETS.high;
+    return Math.min(window.devicePixelRatio || 1, preset.pixelRatioCap);
+  },
+
+  _shadowTypeFor(type) {
+    if (type === "pcf") return THREE.PCFShadowMap;
+    if (type === "basic") return THREE.BasicShadowMap;
+    return THREE.PCFSoftShadowMap;
+  },
+
+  // Il bloom lavora su un buffer più piccolo del frame: va riapplicato dopo
+  // ogni composer.setSize(), che sovrascrive la risoluzione di tutti i pass.
+  _applyBloomResolution(width, height) {
+    if (!this.bloomPass || !this.bloomPass.setSize) return;
+    const preset = this.QUALITY_PRESETS[this.quality] || this.QUALITY_PRESETS.high;
+    if (preset.bloomResolutionScale <= 0) return;
+    const w = (typeof width === "number" ? width : this._viewportWidth) || window.innerWidth;
+    const h = (typeof height === "number" ? height : this._viewportHeight) || window.innerHeight;
+    this.bloomPass.setSize(w * preset.bloomResolutionScale, h * preset.bloomResolutionScale);
+  },
+
+  applyQualitySettings() {
+    const preset = this.QUALITY_PRESETS[this.quality] || this.QUALITY_PRESETS.high;
+    const pixelRatio = this._qualityPixelRatio();
+
+    if (this.renderer) {
+      this.renderer.setPixelRatio(pixelRatio);
+      this.renderer.shadowMap.enabled = preset.shadows;
+      this.renderer.shadowMap.type = this._shadowTypeFor(preset.shadowType);
+    }
+
+    if (this.composer) {
+      this.composer.setPixelRatio(pixelRatio);
+      this.composer.setSize(this._viewportWidth || window.innerWidth, this._viewportHeight || window.innerHeight);
+      this._applyBloomResolution();
+    }
+
+    // In Three.js r128 ogni Pass ha .enabled: a false viene semplicemente saltato.
+    if (this.bloomPass) {
+      this.bloomPass.enabled = preset.bloom;
+    }
+
+    if (this.sunLight) {
+      const shadow = this.sunLight.shadow;
+      this.sunLight.castShadow = preset.shadows;
+      if (shadow) {
+        shadow.mapSize.set(preset.shadowMapSize, preset.shadowMapSize);
+        // La shadow map già allocata è alla vecchia risoluzione: va scartata
+        // per forzarne la ricreazione al prossimo frame.
+        if (shadow.map) {
+          shadow.map.dispose();
+          shadow.map = null;
+        }
+      }
+    }
+  },
+
+  // Ricrea (o riconfigura) il post-processing quando scena o camera cambiano
+  // (showroom ↔ gara) senza perdere bloom e shader pass.
+  ensurePostProcessing(scene, camera) {
+    if (!this.composer) {
+      const pr = this._qualityPixelRatio();
+      this.initPostProcessing(scene, camera, pr);
+      return;
+    }
+    if (this.renderPass) {
+      this.renderPass.scene = scene;
+      this.renderPass.camera = camera;
+    }
+    this.composer.setPixelRatio(this._qualityPixelRatio());
+    this.composer.setSize(this._viewportWidth || window.innerWidth, this._viewportHeight || window.innerHeight);
+    this.applyQualitySettings();
+  },
+
   initPostProcessing(scene, camera, pixelRatio) {
     if (typeof THREE.EffectComposer === "undefined") return;
 
     const width = window.innerWidth;
     const height = window.innerHeight;
+    this._viewportWidth = width;
+    this._viewportHeight = height;
 
     // Composer con buffer di default: NO depth texture custom.
     // In Three.js r128 il custom RenderTarget + depthTexture causa un errore
@@ -172,11 +294,66 @@ const GraphicsEngine = {
       `,
     });
     this.composer.addPass(this.speedPass);
+
+    // Applica subito il preset corrente: bloom, shadow map e pixel ratio
+    // devono rispettare la qualità scelta prima del primo frame renderizzato.
+    this.applyQualitySettings();
+  },
+
+  disposePostProcessing() {
+    // In Three.js r128 composer.dispose() libera solo i render target del
+    // composer: gli FBO/materiali/programmi dei singoli pass restano allocati.
+    // Vanno quindi liberati esplicitamente prima di scartare il composer.
+    if (this.renderPass && this.renderPass.dispose) {
+      this.renderPass.dispose();
+    }
+    if (this.bloomPass && this.bloomPass.dispose) {
+      this.bloomPass.dispose();
+    }
+    if (this.speedPass) {
+      if (this.speedPass.material && this.speedPass.material.dispose) {
+        this.speedPass.material.dispose();
+      }
+      if (this.speedPass.fsQuad && this.speedPass.fsQuad.dispose) {
+        this.speedPass.fsQuad.dispose();
+      }
+    }
+    if (this.composer && this.composer.dispose) {
+      this.composer.dispose();
+    }
+    this.composer = null;
+    this.renderPass = null;
+    this.bloomPass = null;
+    this.speedPass = null;
   },
 
 
   buildAtmosphericSkyAndIBL(scene, trackConfig) {
-    if (this.skyMesh) scene.remove(this.skyMesh);
+    // Libera le risorse della volta precedente prima di ricostruirla: la sola
+    // scene.remove() lasciava SphereGeometry, MeshBasicMaterial e la
+    // CanvasTexture del cielo allocati ad ogni cambio pista.
+    if (this.skyMesh) {
+      scene.remove(this.skyMesh);
+      if (this.skyMesh.geometry && this.skyMesh.geometry.dispose) {
+        this.skyMesh.geometry.dispose();
+      }
+      if (this.skyMesh.material) {
+        if (this.skyMesh.material.map && this.skyMesh.material.map.dispose) {
+          this.skyMesh.material.map.dispose();
+        }
+        if (this.skyMesh.material.dispose) {
+          this.skyMesh.material.dispose();
+        }
+      }
+      this.skyMesh = null;
+      this.skyTexture = null;
+    }
+
+    // Anche il precedente env map PMREM è una risorsa GPU da liberare.
+    if (this.currentEnvMap) {
+      this.currentEnvMap.dispose();
+      this.currentEnvMap = null;
+    }
 
     const canvas = document.createElement("canvas");
     canvas.width = 512;
@@ -200,7 +377,6 @@ const GraphicsEngine = {
     this.skyTexture = texture;
 
     if (this.pmremGenerator) {
-      if (this.currentEnvMap) this.currentEnvMap.dispose();
       this.currentEnvMap = this.pmremGenerator.fromEquirectangular(texture).texture;
       scene.environment = this.currentEnvMap;
     }
@@ -221,7 +397,17 @@ const GraphicsEngine = {
   },
 
   initDriftSparkPool(scene) {
-    if (this.sparkGroup) scene.remove(this.sparkGroup);
+    if (this.sparkGroup) {
+      scene.remove(this.sparkGroup);
+      // Ogni scintilla ha il proprio MeshBasicMaterial (il colore varia a
+      // runtime) e condivide una BoxGeometry: entrambi vanno liberati prima
+      // di ricostruire il pool, altrimenti restano allocati ad ogni pista.
+      this.sparkGroup.traverse((child) => {
+        if (child.geometry && child.geometry.dispose) child.geometry.dispose();
+        if (child.material && child.material.dispose) child.material.dispose();
+      });
+      this.sparkGroup = null;
+    }
     this.sparkGroup = new THREE.Group();
     scene.add(this.sparkGroup);
     this.sparkPool = [];
@@ -426,22 +612,35 @@ const GraphicsEngine = {
 
   setupSunLight(scene, sunPosition) {
     const position = sunPosition || new THREE.Vector3(120, 220, 90);
+    const preset = this.QUALITY_PRESETS[this.quality] || this.QUALITY_PRESETS.high;
     const sun = new THREE.DirectionalLight(0xffffff, 1.25);
     sun.position.copy(position);
-    sun.castShadow = true;
-    // Shadow map 1024x1024 con PCFSoftShadowMap: identica resa visiva in corsa ma 4x più veloce di 2048x2048
-    sun.shadow.mapSize.set(1024, 1024);
+    sun.castShadow = preset.shadows;
+    // Shadow map in base al preset di qualità (1024x1024 su high/medium):
+    // identica resa visiva in corsa ma 4x più veloce di 2048x2048.
+    sun.shadow.mapSize.set(preset.shadowMapSize, preset.shadowMapSize);
     sun.shadow.camera.near = 10;
     sun.shadow.camera.far = 240;
-    sun.shadow.camera.left = -75;
-    sun.shadow.camera.right = 75;
-    sun.shadow.camera.top = 75;
-    sun.shadow.camera.bottom = -75;
+    // Frustum ridotto a ±55: meno oggetti finiscono nella shadow map a parità
+    // di resa visiva in gara (la vettura è sempre al centro della shadow camera).
+    sun.shadow.camera.left = -55;
+    sun.shadow.camera.right = 55;
+    sun.shadow.camera.top = 55;
+    sun.shadow.camera.bottom = -55;
     sun.shadow.bias = -0.0005;
     this.sunLight = sun;
 
+    // Tipo di shadow map a livello renderer, sempre dal preset corrente.
+    if (this.renderer) {
+      this.renderer.shadowMap.enabled = preset.shadows;
+      this.renderer.shadowMap.type = this._shadowTypeFor(preset.shadowType);
+    }
+
     const hemi = new THREE.HemisphereLight(0x60a5fa, 0x1e293b, 0.5);
-    scene.add(sun, hemi);
+    // sun.target deve far parte della scena, altrimenti la sua matrixWorld
+    // resta all'origine e la luce illumina/ombreggia sempre il world origin
+    // ignorando update() che sposta il target sulla vettura.
+    scene.add(sun, sun.target, hemi);
     return { sun, hemi };
   },
 
@@ -454,8 +653,9 @@ const GraphicsEngine = {
   },
 
   update(dt, playerCar, currentSpeedKmh) {
+    const t0 = performance.now();
     const isBoost = Boolean(
-      playerCar && (playerCar.drsActive || playerCar.turboWasActive)
+      playerCar && (playerCar.drsActive || playerCar.turboWasActive || playerCar.isSlingshotBoosting || (playerCar.draftIntensity && playerCar.draftIntensity > 0.45))
     );
 
     if (this.speedPass) {
@@ -470,8 +670,8 @@ const GraphicsEngine = {
 
     if (playerCar && typeof RaceEngine !== "undefined" && RaceEngine.isActive) {
       const isDrifting = Math.abs(playerCar.driftAngle) > 0.14 && currentSpeedKmh > 55;
-      if (isDrifting || playerCar.turboWasActive) {
-        this.spawnDriftSparks(playerCar, Boolean(playerCar.turboWasActive));
+      if (isDrifting || playerCar.turboWasActive || playerCar.isSlingshotBoosting) {
+        this.spawnDriftSparks(playerCar, Boolean(playerCar.turboWasActive || playerCar.isSlingshotBoosting));
       }
     }
     this.updateDriftSparks(dt);
@@ -505,14 +705,22 @@ const GraphicsEngine = {
         disc.material.emissiveIntensity = disc.userData.thermalIntensity;
       }
     }
+
+    this.perf.updateMs = performance.now() - t0;
   },
 
   render(scene, camera) {
+    const t0 = performance.now();
+    if (this.renderer && this.renderer.info) this.renderer.info.reset();
+
     if (this.skyMesh && camera) {
       this.skyMesh.position.copy(camera.position);
     }
     if (!this.composer) {
       this.renderer.render(scene, camera);
+      this.perf.renderMs = performance.now() - t0;
+      this.perf.drawCalls = this.renderer.info.render.calls;
+      this.perf.triangles = this.renderer.info.render.triangles;
       return;
     }
     // Aggiorna sempre scene e camera nel renderPass per gestire
@@ -522,9 +730,21 @@ const GraphicsEngine = {
       this.renderPass.camera = camera;
     }
     this.composer.render();
+
+    this.perf.renderMs = performance.now() - t0;
+    this.perf.drawCalls = this.renderer.info.render.calls;
+    this.perf.triangles = this.renderer.info.render.triangles;
   },
 
   resize(width, height) {
-    if (this.composer) this.composer.setSize(width, height);
+    this._viewportWidth = width;
+    this._viewportHeight = height;
+    if (this.composer) {
+      this.composer.setPixelRatio(this._qualityPixelRatio());
+      this.composer.setSize(width, height);
+      // composer.setSize() estende la risoluzione del bloom al frame intero:
+      // va riportata alla scala prevista dal preset di qualità.
+      this._applyBloomResolution(width, height);
+    }
   },
 };

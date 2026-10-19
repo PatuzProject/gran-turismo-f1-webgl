@@ -16,6 +16,7 @@ const StorageManager = {
             ownedCars: [],
             equippedCar: null,
             difficulty: 'medium',
+            graphicsQuality: 'high',
             records: records
         };
     },
@@ -32,6 +33,7 @@ const StorageManager = {
                 ownedCars: Array.isArray(parsed.ownedCars) ? parsed.ownedCars : def.ownedCars,
                 equippedCar: parsed.equippedCar || null,
                 difficulty: typeof parsed.difficulty === 'string' ? parsed.difficulty : def.difficulty,
+                graphicsQuality: ['high', 'medium', 'low'].includes(parsed.graphicsQuality) ? parsed.graphicsQuality : def.graphicsQuality,
                 records: { ...def.records, ...(parsed.records || {}) }
             };
         } catch (e) {

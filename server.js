@@ -32,8 +32,9 @@ try {
 
 const PORT = process.env.PORT || 3000;
 
+// Rete di sicurezza (NON percorso principale): logga sempre lo stack completo
 process.on("uncaughtException", (err) => {
-  console.warn("[LAN SERVER] Errore non gestito:", err.message);
+  console.warn("[LAN SERVER] Errore non gestito:", err && err.stack ? err.stack : err);
 });
 process.on("unhandledRejection", (reason) => {
   console.warn("[LAN SERVER] Rejection non gestita:", reason);
@@ -57,15 +58,60 @@ const MIME_TYPES = {
   ".wav": "audio/wav",
 };
 
+// Radice assoluta dei file statici serviti dal gioco
+const STATIC_ROOT = path.resolve(__dirname);
+
+// Controllo di sicurezza sul percorso richiesto: rifiuta traversal, byte nulli,
+// unità disco (C:) e percorsi UNC/assoluti.
+function isSafeStaticPath(reqPath) {
+  if (!reqPath || typeof reqPath !== "string") return false;
+  if (reqPath.indexOf("\0") !== -1) return false; // byte nullo
+  if (/^[a-zA-Z]:/.test(reqPath)) return false; // "C:" / "C:\..."
+  if (/^[\\/]{2}/.test(reqPath)) return false; // UNC "\\server\share" o "//server"
+  // Nessun segmento ".." (dopo la separazione su / e \)
+  if (reqPath.split(/[\\/]+/).some((seg) => seg === "..")) return false;
+  return true;
+}
+
 // -----------------------------------------------------------------------------
 // 1. SERVER HTTP STATICO
 // -----------------------------------------------------------------------------
 const server = http.createServer((req, res) => {
-  let reqPath = req.url.split("?")[0];
+  // Solo GET e HEAD: nessun altro metodo è ammesso sui file statici
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.writeHead(405, { "Content-Type": "text/plain; charset=UTF-8", "Allow": "GET, HEAD" });
+    res.end("405 Metodo Non Consentito");
+    return;
+  }
+
+  let reqPath = (req.url || "").split("?")[0];
+
+  // Decodifica le sequenze percent-encoded (es. %2e%2e -> ..) prima dei controlli
+  try {
+    reqPath = decodeURIComponent(reqPath);
+  } catch (err) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=UTF-8" });
+    res.end("400 Richiesta Non Valida");
+    return;
+  }
+
   if (reqPath === "/" || reqPath === "") reqPath = "/index.html";
 
-  const safePath = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, "");
-  const filePath = path.join(__dirname, safePath);
+  if (!isSafeStaticPath(reqPath)) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=UTF-8" });
+    res.end("403 Accesso Negato");
+    return;
+  }
+
+  const root = STATIC_ROOT;
+  const filePath = path.resolve(root, "." + (reqPath.startsWith("/") ? reqPath : "/" + reqPath));
+
+  // Il file risolto DEVE restare dentro la radice del progetto
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=UTF-8" });
+    res.end("403 Accesso Negato");
+    return;
+  }
 
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {
@@ -80,33 +126,258 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, {
       "Content-Type": contentType,
       "Cache-Control": "no-cache",
-      "Access-Control-Allow-Origin": "*",
     });
 
-    fs.createReadStream(filePath).pipe(res);
+    const stream = fs.createReadStream(filePath);
+    // Gestione esplicita degli errori di lettura: evita eccezioni non gestite
+    stream.on("error", (streamErr) => {
+      console.warn("[LAN SERVER] Errore lettura file statico:", streamErr.message);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=UTF-8" });
+      }
+      res.end();
+    });
+    stream.pipe(res);
   });
 });
 
 // -----------------------------------------------------------------------------
+// 1b. VALIDAZIONE ORIGIN + CREAZIONE SERVER WEBSOCKET
+// -----------------------------------------------------------------------------
+// Host consentiti nell'header Origin: localhost e indirizzi LAN privati
+const PRIVATE_HOST_RE = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/;
+
+// Validazione permissiva dell'Origin: se l'header è assente (client non-browser,
+// es. test/strumenti) o vale "null" (pagina aperta da file://), la connessione è
+// consentita. Se presente, l'host deve essere localhost, un IP privato, un nome
+// macchina LAN (senza dominio pubblico) o mDNS.
+function isAllowedOrigin(origin) {
+  if (!origin || origin === "null" || typeof origin !== "string") return true;
+  let host;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    host = u.hostname.toLowerCase().replace(/^\[|\]$/g, ""); // rimuove le [] degli IPv6
+  } catch (err) {
+    return false;
+  }
+  if (PRIVATE_HOST_RE.test(host)) return true;
+  if (host === "::1") return true; // IPv6 loopback
+  if (/^fe80:/i.test(host) || /^f[cd][0-9a-f]{2}:/i.test(host)) return true; // IPv6 link-local/ULA
+  if (/\.local$/i.test(host)) return true; // mDNS
+  if (/^[a-z0-9][a-z0-9-]*$/.test(host)) return true; // nome macchina LAN (nessun punto => non pubblico)
+  return false;
+}
+
+// maxPayload limita la dimensione dei frame in ingresso (protezione DoS): 64 KB
+// sono ampiamente sufficienti per i messaggi 'update' legittimi.
+// verifyClient valida l'header Origin PRIMA dell'handshake: una pagina web esterna
+// non riesce nemmeno ad aprire la connessione (risposta 401).
+const wss = new WebSocket.Server({
+  server,
+  maxPayload: 64 * 1024,
+  verifyClient: (info) => {
+    const origin = info && info.req && info.req.headers ? info.req.headers.origin : undefined;
+    if (isAllowedOrigin(origin)) return true;
+    console.warn(`[LAN] Handshake rifiutato: Origin non consentita (${origin})`);
+    return false;
+  },
+});
+
+// -----------------------------------------------------------------------------
+// 2b. HEARTBEAT WEBSOCKET NATIVO (rimozione delle auto fantasma)
+// -----------------------------------------------------------------------------
+// Usa i ping/pong NATIVI di 'ws': distinti dai messaggi JSON { type: "ping" } del
+// protocollo applicativo, quindi non interferisce con la latenza RTT dei client.
+const HEARTBEAT_INTERVAL_MS = 30000;
+const heartbeatTimer = setInterval(() => {
+  const now = Date.now();
+  for (const ws of wss.clients) {
+    if (now - (ws.lastAppSeen || now) > 90000) {
+      console.warn("[LAN] Client inattivo oltre il timeout applicativo: terminazione.");
+      ws.terminate();
+      continue;
+    }
+    if (ws.isAlive === false) {
+      console.warn("[LAN] Socket non reattiva: terminazione (auto fantasma rimossa).");
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch (err) {
+      ws.terminate();
+    }
+  }
+}, HEARTBEAT_INTERVAL_MS);
+
+wss.on("close", () => clearInterval(heartbeatTimer));
+
+// -----------------------------------------------------------------------------
 // 2. REGISTRO CONDIVISO DEI GIOCATORI
 // -----------------------------------------------------------------------------
-const wss = new WebSocket.Server({ server });
-
 // Mappa: playerId -> { id, name, color, carId, x, y, z, rotY, speed, isDrifting, ping }
 const players = {};
 // Mappa di correlazione socket -> playerId
 const socketToId = new Map();
+let raceSequence = 1;
+let activeRace = null;
 
 // Gestione Host della sessione LAN e impostazioni stanza condivisa
 let hostId = null;
 let roomSettings = {
   trackId: "monza",
   laps: 3,
+  gameMode: "single_race", // 'single_race' | 'championship'
+  enableBots: true,
+  championship: {
+    presetId: "euro_tour",
+    name: "Tour Europeo GP (4 Tappe)",
+    tracks: ["monza", "spielberg", "silverstone", "spa"],
+    currentStageIndex: 0,
+    totalStages: 4,
+    gridRule: "reverse_8",
+    lapsPerRace: 3,
+    enableBots: true,
+  },
 };
 
 let idSequence = 1;
 function generateId() {
   return `p_${Date.now().toString(36)}_${idSequence++}`;
+}
+
+// -----------------------------------------------------------------------------
+// 2c. UTILITÀ DI VALIDAZIONE INPUT (anti spoofing / anti "NaN poisoning")
+// -----------------------------------------------------------------------------
+const COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
+const CAR_ID_RE = /^[a-z0-9_\-]{1,32}$/;
+const GAME_MODES = ["single_race", "championship"];
+
+// Intero troncato e vincolato tra min e max; fallback se non è un numero finito
+function clampInt(v, min, max, fallback) {
+  const n = Math.trunc(Number(v));
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
+// Numero finito garantito: evita di propagare NaN/Infinity (es. 1e400 nel JSON)
+function finiteNumber(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Numero finito oppure null (per i campi opzionali come bestTime/bestLapTime)
+function finiteOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Rimuove i caratteri di controllo e limita la lunghezza di una stringa
+function sanitizeText(v, maxLen) {
+  if (typeof v !== "string") return "";
+  return v.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, maxLen);
+}
+
+// Colore esadecimale valido, altrimenti default
+function safeColor(v) {
+  return typeof v === "string" && COLOR_RE.test(v) ? v : "#00f0ff";
+}
+
+// Identificativo auto breve e valido, altrimenti default
+function safeCarId(v) {
+  return typeof v === "string" && CAR_ID_RE.test(v) ? v : "hatchback";
+}
+
+// Modalità di gioco da allowlist, altrimenti fallback
+function safeGameMode(v, fallback) {
+  return GAME_MODES.indexOf(v) !== -1 ? v : fallback;
+}
+
+function safeGridSlots(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = {};
+  for (const [id, slot] of Object.entries(value)) {
+    if (
+      typeof id === "string" &&
+      id.length <= 64 &&
+      Number.isInteger(slot) &&
+      slot >= 0 &&
+      slot < 100
+    ) {
+      result[id] = slot;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function sanitizeAiTelemetry(value) {
+  if (!Array.isArray(value)) return null;
+  const result = [];
+  for (const item of value.slice(0, 32)) {
+    if (
+      !item ||
+      typeof item.id !== "string" ||
+      !/^ai_[a-z0-9_-]{1,32}$/i.test(item.id)
+    ) {
+      continue;
+    }
+    result.push({
+      id: item.id,
+      x: finiteNumber(item.x, 0),
+      y: finiteNumber(item.y, 0),
+      z: finiteNumber(item.z, 0),
+      rotY: finiteNumber(item.rotY, 0),
+      speed: Math.max(0, finiteNumber(item.speed, 0)),
+      lap: clampInt(item.lap, 1, 99, 1),
+      sampleIndex: clampInt(item.sampleIndex, 0, 1e9, 0),
+      totalProgress: finiteNumber(item.totalProgress, 0),
+      curTime: Math.max(0, finiteNumber(item.curTime, 0)),
+      bestTime: finiteOrNull(item.bestTime),
+      finished: Boolean(item.finished),
+      finishTime: Math.max(0, finiteNumber(item.finishTime, 0)),
+      aiStatusTag: sanitizeText(item.aiStatusTag, 32) || null,
+    });
+  }
+  return result;
+}
+
+function createRaceId() {
+  return `race_${Date.now().toString(36)}_${raceSequence++}`;
+}
+
+function getActiveRaceSnapshot() {
+  if (!activeRace) return null;
+  return {
+    ...activeRace,
+    players: Object.values(players),
+  };
+}
+
+// Token bucket per-socket sui frame 'update': ~120 msg/s con piccolo burst.
+// Il tick legittimo (20-30 Hz) resta ampiamente sotto la soglia.
+const RATE_LIMIT_PER_SEC = 120;
+const RATE_LIMIT_BURST = 60;
+const socketBuckets = new WeakMap();
+
+function consumeToken(ws) {
+  const now = Date.now();
+  let bucket = socketBuckets.get(ws);
+  if (!bucket) {
+    bucket = { tokens: RATE_LIMIT_BURST, last: now };
+    socketBuckets.set(ws, bucket);
+  }
+  // Ricarica proporzionale al tempo trascorso dal token precedente
+  const elapsed = (now - bucket.last) / 1000;
+  bucket.last = now;
+  bucket.tokens = Math.min(RATE_LIMIT_BURST, bucket.tokens + elapsed * RATE_LIMIT_PER_SEC);
+  if (bucket.tokens < 1) return false; // Limite superato: messaggio scartato
+  bucket.tokens -= 1;
+  return true;
 }
 
 // Invia JSON a un socket specifico
@@ -143,31 +414,53 @@ wss.on("connection", (ws, req) => {
   const assignedId = generateId();
   socketToId.set(ws, assignedId);
 
+  // Stato per l'heartbeat nativo (ping/pong WS), non per i messaggi JSON 'ping'
+  ws.isAlive = true;
+  ws.lastAppSeen = Date.now();
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
   console.log(`[LAN] Client connesso (socket ID: ${assignedId})`);
 
   ws.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw);
       if (!msg || !msg.type) return;
+      ws.lastAppSeen = Date.now();
 
       switch (msg.type) {
         // =====================================================================
         // 1. NUOVA CONNESSIONE / REGISTRAZIONE GIOCATORE ('init')
         // =====================================================================
         case "init": {
-          const playerId = msg.id || assignedId;
+          // L'identità è SEMPRE quella assegnata dal server a questa socket:
+          // l'eventuale msg.id inviato dal client viene completamente ignorato.
+          const playerId = socketToId.get(ws) || assignedId;
+          const oldId = socketToId.get(ws);
+
+          // Re-init della stessa socket: elimina il vecchio giocatore orfano
+          // (altrimenti la mappa 'players' si riempirebbe di entry non più usate).
+          if (oldId && oldId !== playerId && players[oldId]) {
+            delete players[oldId];
+            // Se il vecchio giocatore era l'Host, rielegge il primo rimasto
+            if (hostId === oldId) {
+              const remainingIds = Object.keys(players);
+              hostId = remainingIds.length > 0 ? remainingIds[0] : null;
+            }
+          }
           socketToId.set(ws, playerId);
 
           const playerData = {
             id: playerId,
-            name: (msg.name && String(msg.name).trim().slice(0, 20)) || `Pilota ${playerId.slice(-4)}`,
-            color: msg.color || "#00f0ff",
-            carId: msg.carId || "hatchback",
-            x: typeof msg.x === "number" ? msg.x : 0,
-            y: typeof msg.y === "number" ? msg.y : 0,
-            z: typeof msg.z === "number" ? msg.z : 0,
-            rotY: typeof msg.rotY === "number" ? msg.rotY : 0,
-            speed: typeof msg.speed === "number" ? msg.speed : 0,
+            name: sanitizeText(msg.name, 20) || `Pilota ${playerId.slice(-4)}`,
+            color: safeColor(msg.color),
+            carId: safeCarId(msg.carId),
+            x: finiteNumber(msg.x, 0),
+            y: finiteNumber(msg.y, 0),
+            z: finiteNumber(msg.z, 0),
+            rotY: finiteNumber(msg.rotY, 0),
+            speed: finiteNumber(msg.speed, 0),
             isDrifting: Boolean(msg.isDrifting),
             ping: 0,
           };
@@ -190,6 +483,7 @@ wss.on("connection", (ws, req) => {
             hostId: hostId,
             roomSettings: roomSettings,
             players: players, // Mappa completa di tutte le auto nella stanza
+            activeRace: getActiveRaceSnapshot(),
           });
 
           // Notifica a tutti gli ALTRI client che è entrato un nuovo giocatore con l'host attuale
@@ -208,20 +502,26 @@ wss.on("connection", (ws, req) => {
           const pId = socketToId.get(ws);
           if (!pId || !players[pId]) return;
 
-          if (msg.name && typeof msg.name === "string") {
-            players[pId].name = msg.name.trim().slice(0, 20);
+          if (typeof msg.name === "string") {
+            const cleanName = sanitizeText(msg.name, 20);
+            if (cleanName) players[pId].name = cleanName;
           }
-          if (msg.color) {
+          if (typeof msg.color === "string" && COLOR_RE.test(msg.color)) {
             players[pId].color = msg.color;
           }
-          if (msg.carId) {
+          if (typeof msg.carId === "string" && CAR_ID_RE.test(msg.carId)) {
             players[pId].carId = msg.carId;
           }
 
           // Se chi invia è l'host e ha cambiato pista o giri
           if (pId === hostId) {
-            if (msg.trackId) roomSettings.trackId = msg.trackId;
-            if (typeof msg.laps === "number") roomSettings.laps = msg.laps;
+            if (typeof msg.trackId === "string") {
+              const cleanTrack = sanitizeText(msg.trackId, 40);
+              if (cleanTrack) roomSettings.trackId = cleanTrack;
+            }
+            if (typeof msg.laps === "number") {
+              roomSettings.laps = clampInt(msg.laps, 1, 99, roomSettings.laps);
+            }
           }
 
           // Broadcast aggiornamento a TUTTI i client per sincronizzare la lobby in tempo reale
@@ -240,8 +540,26 @@ wss.on("connection", (ws, req) => {
         case "update_room": {
           const pId = socketToId.get(ws);
           if (pId === hostId) {
-            if (msg.trackId) roomSettings.trackId = msg.trackId;
-            if (typeof msg.laps === "number") roomSettings.laps = msg.laps;
+            if (typeof msg.trackId === "string") {
+              const cleanTrack = sanitizeText(msg.trackId, 40);
+              if (cleanTrack) roomSettings.trackId = cleanTrack;
+            }
+            if (typeof msg.laps === "number") {
+              roomSettings.laps = clampInt(msg.laps, 1, 99, roomSettings.laps);
+            }
+            if (msg.gameMode) {
+              roomSettings.gameMode = safeGameMode(msg.gameMode, roomSettings.gameMode);
+            }
+            if (msg.championship && typeof msg.championship === "object" && !Array.isArray(msg.championship)) {
+              roomSettings.championship = {
+                ...msg.championship,
+                gridSlots: safeGridSlots(msg.championship.gridSlots),
+              };
+            }
+            if (typeof msg.enableBots === "boolean") {
+              roomSettings.enableBots = msg.enableBots;
+              if (roomSettings.championship) roomSettings.championship.enableBots = msg.enableBots;
+            }
             broadcastAll({
               type: "roomUpdated",
               roomSettings: roomSettings,
@@ -255,53 +573,90 @@ wss.on("connection", (ws, req) => {
         // 4. AGGIORNAMENTO TRASFORMAZIONI FISICHE ('update')
         // =====================================================================
         case "update": {
-          const pId = msg.id || socketToId.get(ws);
-          if (!pId) return;
+          // Identità dal server: 'msg.id' è ignorato (previene lo spoofing)
+          const pId = socketToId.get(ws);
+          if (!pId || !players[pId]) return;
+          if (
+            activeRace &&
+            typeof msg.raceId === "string" &&
+            msg.raceId !== activeRace.raceId
+          ) {
+            return;
+          }
+
+          // Rate limiting per-socket: i frame in eccesso vengono scartati (no broadcast)
+          if (!consumeToken(ws)) return;
+
+          // Sanificazione numerica: JSON può contenere 1e400 (=> Infinity) o campi
+          // errati. I valori non finiti vengono sostituiti con un default sicuro per
+          // evitare il "NaN poisoning" dello stato condiviso e dei client remoti.
+          const x = finiteNumber(msg.x, 0);
+          const y = finiteNumber(msg.y, 0);
+          const z = finiteNumber(msg.z, 0);
+          const vx = finiteNumber(msg.vx, 0);
+          const vy = finiteNumber(msg.vy, 0);
+          const vz = finiteNumber(msg.vz, 0);
+          const rotY = finiteNumber(msg.rotY, 0);
+          const yawRate = finiteNumber(msg.yawRate, 0);
+          const speed = finiteNumber(msg.speed, 0);
+          const t = finiteNumber(msg.t, Date.now());
+          const curTime = finiteNumber(msg.curTime, 0);
+          const totalProgress = finiteNumber(msg.totalProgress, 0);
+          const sampleIndex = clampInt(msg.sampleIndex, 0, 1e9, 0);
+          const finishTime = finiteNumber(msg.finishTime, 0);
+          const lap = clampInt(msg.lap, 1, 99, players[pId].lap || 1);
+          const bestTime = finiteOrNull(msg.bestTime);
+          const isDrifting = Boolean(msg.isDrifting);
+          const finished = Boolean(msg.finished);
 
           // Aggiorna lo stato in memoria inclusa la telemetria di gara ed estrapolazione
-          if (players[pId]) {
-            players[pId].x = msg.x;
-            players[pId].y = msg.y;
-            players[pId].z = msg.z;
-            players[pId].vx = typeof msg.vx === "number" ? msg.vx : 0;
-            players[pId].vy = typeof msg.vy === "number" ? msg.vy : 0;
-            players[pId].vz = typeof msg.vz === "number" ? msg.vz : 0;
-            players[pId].rotY = msg.rotY;
-            players[pId].yawRate = typeof msg.yawRate === "number" ? msg.yawRate : 0;
-            players[pId].speed = msg.speed || 0;
-            players[pId].isDrifting = Boolean(msg.isDrifting);
-            players[pId].t = typeof msg.t === "number" ? msg.t : Date.now();
-            if (typeof msg.lap === "number") players[pId].lap = msg.lap;
-            if (typeof msg.sampleIndex === "number") players[pId].sampleIndex = msg.sampleIndex;
-            if (typeof msg.totalProgress === "number") players[pId].totalProgress = msg.totalProgress;
-            if (typeof msg.curTime === "number") players[pId].curTime = msg.curTime;
-            if (msg.bestTime) players[pId].bestTime = msg.bestTime;
-            if (typeof msg.finished === "boolean") players[pId].finished = msg.finished;
-            if (typeof msg.finishTime === "number") players[pId].finishTime = msg.finishTime;
+          players[pId].x = x;
+          players[pId].y = y;
+          players[pId].z = z;
+          players[pId].vx = vx;
+          players[pId].vy = vy;
+          players[pId].vz = vz;
+          players[pId].rotY = rotY;
+          players[pId].yawRate = yawRate;
+          players[pId].speed = speed;
+          players[pId].isDrifting = isDrifting;
+          players[pId].t = t;
+          players[pId].lap = lap;
+          players[pId].sampleIndex = sampleIndex;
+          players[pId].totalProgress = totalProgress;
+          players[pId].curTime = curTime;
+          players[pId].bestTime = bestTime;
+          players[pId].finished = finished;
+          players[pId].finishTime = finishTime;
+          players[pId].raceId = activeRace ? activeRace.raceId : null;
+          if (activeRace && activeRace.status !== "finished") {
+            activeRace.status = "active";
           }
 
           // BROADCAST SELETTIVO IMMEDIATO a tutti gli ALTRI client eccetto il mittente
           broadcastExcept(ws, {
             type: "update",
             id: pId,
-            t: typeof msg.t === "number" ? msg.t : Date.now(),
-            x: msg.x,
-            y: msg.y,
-            z: msg.z,
-            vx: typeof msg.vx === "number" ? msg.vx : 0,
-            vy: typeof msg.vy === "number" ? msg.vy : 0,
-            vz: typeof msg.vz === "number" ? msg.vz : 0,
-            rotY: msg.rotY,
-            yawRate: typeof msg.yawRate === "number" ? msg.yawRate : 0,
-            speed: msg.speed || 0,
-            isDrifting: Boolean(msg.isDrifting),
-            lap: msg.lap || 1,
-            sampleIndex: msg.sampleIndex || 0,
-            totalProgress: typeof msg.totalProgress === "number" ? msg.totalProgress : 0,
-            curTime: msg.curTime || 0,
-            bestTime: msg.bestTime || null,
-            finished: Boolean(msg.finished),
-            finishTime: msg.finishTime || 0,
+            t: t,
+            x: x,
+            y: y,
+            z: z,
+            vx: vx,
+            vy: vy,
+            vz: vz,
+            rotY: rotY,
+            yawRate: yawRate,
+            speed: speed,
+            isDrifting: isDrifting,
+            lap: lap,
+            sampleIndex: sampleIndex,
+            totalProgress: totalProgress,
+            curTime: curTime,
+            bestTime: bestTime,
+            finished: finished,
+            finishTime: finishTime,
+            aiList: sanitizeAiTelemetry(msg.aiList),
+            raceId: activeRace ? activeRace.raceId : null,
           });
           break;
         }
@@ -330,12 +685,47 @@ wss.on("connection", (ws, req) => {
             console.log(`[LAN] Rifiutato avvio gara: client ${pId} non è l'host (${hostId})`);
             return;
           }
+          if (activeRace && activeRace.status !== "finished") {
+            console.log(`[LAN] Avvio gara duplicato ignorato (${activeRace.raceId})`);
+            return;
+          }
 
-          const trackId = msg.trackId || roomSettings.trackId || "monza";
-          const laps = msg.laps || roomSettings.laps || 3;
-          const countdownDuration = msg.countdownDuration || 4.5;
+          const trackId = (typeof msg.trackId === "string" && sanitizeText(msg.trackId, 40)) || roomSettings.trackId || "monza";
+          const laps = clampInt(msg.laps, 1, 99, roomSettings.laps || 3);
+          const gameMode = safeGameMode(msg.gameMode, roomSettings.gameMode || "single_race");
+          const rawChampionship =
+            msg.championship &&
+            typeof msg.championship === "object" &&
+            !Array.isArray(msg.championship)
+              ? msg.championship
+              : roomSettings.championship || null;
+          const championship = rawChampionship
+            ? {
+                ...rawChampionship,
+                gridSlots: safeGridSlots(rawChampionship.gridSlots),
+              }
+            : null;
+          const enableBots = (typeof msg.enableBots === "boolean") ? msg.enableBots : (roomSettings.enableBots !== false);
+          // Durata countdown finita e vincolata: un valore NaN propagherebbe
+          // 'raceStartTime' non valido a tutti i client.
+          const countdownDuration = Math.min(30, Math.max(0.5, finiteNumber(msg.countdownDuration, 4.5)));
           const nowServer = Date.now();
           const raceStartTime = nowServer + Math.round(countdownDuration * 1000);
+          const raceId = createRaceId();
+          const gridSlots = safeGridSlots(msg.gridSlots);
+          activeRace = {
+            raceId,
+            status: "starting",
+            trackId,
+            laps,
+            gameMode,
+            championship,
+            enableBots,
+            countdownDuration,
+            raceStartTime,
+            gridSlots,
+            startedBy: pId,
+          };
 
           // Reset stato e telemetria gara per tutti i concorrenti
           for (const pid in players) {
@@ -348,16 +738,21 @@ wss.on("connection", (ws, req) => {
             players[pid].bestTime = null;
           }
 
-          console.log(`[LAN] Segnale di partenza gara inviato dall'Host (${pId}) a tutti i ${Object.keys(players).length} giocatori`);
+          console.log(`[LAN] Segnale di partenza gara inviato dall'Host (${pId}) a tutti i ${Object.keys(players).length} giocatori [Modo: ${gameMode}, Bot: ${enableBots}]`);
           broadcastAll({
             type: "start_race",
             trackId: trackId,
             countdownDuration: countdownDuration,
             laps: laps,
+            gameMode: gameMode,
+            championship: championship,
+            enableBots: enableBots,
+            gridSlots,
             players: Object.values(players),
             serverTime: nowServer,
             startTime: nowServer,
             raceStartTime: raceStartTime,
+            raceId,
           });
           break;
         }
@@ -366,17 +761,38 @@ wss.on("connection", (ws, req) => {
         // 7. TRAGUARDO GARA (FINISH_RACE)
         // =====================================================================
         case "finish_race": {
-          const pId = msg.id || socketToId.get(ws);
-          if (pId && players[pId]) {
-            players[pId].finished = true;
-            players[pId].finishTime = msg.finishTime;
-            if (msg.bestLapTime) players[pId].bestLapTime = msg.bestLapTime;
+          // Identità dal server: 'msg.id' è ignorato (previene lo spoofing)
+          const pId = socketToId.get(ws);
+          if (!pId || !players[pId]) return;
+
+          const finishTime = finiteNumber(msg.finishTime, 0);
+          const bestLapTime = finiteOrNull(msg.bestLapTime);
+          if (
+            activeRace &&
+            typeof msg.raceId === "string" &&
+            msg.raceId !== activeRace.raceId
+          ) {
+            return;
           }
+
+          players[pId].finished = true;
+          players[pId].finishTime = finishTime;
+          if (bestLapTime !== null) players[pId].bestLapTime = bestLapTime;
+          if (activeRace) {
+            players[pId].raceId = activeRace.raceId;
+            const activeIds = Object.keys(players);
+            const allFinished = activeIds.length > 0 && activeIds.every(
+              (id) => players[id].finished,
+            );
+            if (allFinished) activeRace.status = "finished";
+          }
+
           broadcastAll({
             type: "finish_race",
             id: pId,
-            finishTime: msg.finishTime,
-            bestLapTime: msg.bestLapTime,
+            finishTime: finishTime,
+            bestLapTime: bestLapTime,
+            raceId: activeRace ? activeRace.raceId : null,
           });
           break;
         }
@@ -385,20 +801,36 @@ wss.on("connection", (ws, req) => {
         // 8. ALTRI EVENTI DI GARA (checkpoint_pass, ecc.)
         // =====================================================================
         case "checkpoint_pass": {
-          const pId = msg.id || socketToId.get(ws);
-          if (pId && players[pId]) {
-            players[pId].lap = msg.lap;
-            players[pId].sampleIndex = msg.sampleIndex;
-            players[pId].totalProgress = msg.totalProgress;
-          }
-          broadcastExcept(ws, msg);
+          // Identità dal server: 'msg.id' è ignorato (previene lo spoofing)
+          const pId = socketToId.get(ws);
+          if (!pId || !players[pId]) return;
+
+          const lap = clampInt(msg.lap, 1, 99, players[pId].lap || 1);
+          const sampleIndex = clampInt(msg.sampleIndex, 0, 1e9, 0);
+          const totalProgress = finiteNumber(msg.totalProgress, players[pId].totalProgress || 0);
+          const raceId = typeof msg.raceId === "string" ? msg.raceId : null;
+          if (activeRace && raceId && raceId !== activeRace.raceId) return;
+
+          players[pId].lap = lap;
+          players[pId].sampleIndex = sampleIndex;
+          players[pId].totalProgress = totalProgress;
+          players[pId].raceId = raceId;
+
+          // Inoltra un payload sanificato con l'ID assegnato dal server
+          broadcastExcept(ws, {
+            type: "checkpoint_pass",
+            id: pId,
+            lap: lap,
+            sampleIndex: sampleIndex,
+            totalProgress: totalProgress,
+            raceId: activeRace ? activeRace.raceId : null,
+          });
           break;
         }
 
-        default: {
-          broadcastExcept(ws, msg);
+        default:
+          console.warn(`[LAN] Tipo messaggio sconosciuto ignorato: ${msg.type}`);
           break;
-        }
       }
     } catch (err) {
       console.warn("[LAN] Errore elaborazione messaggio JSON:", err.message);
@@ -426,6 +858,15 @@ wss.on("connection", (ws, req) => {
       }
 
       console.log(`[LAN] Disconnessione: ${leftPlayer.name} (${pId}). Rimanenti: ${Object.keys(players).length}, Host attuale: ${hostId}`);
+      if (Object.keys(players).length === 0) {
+        activeRace = null;
+      } else if (
+        activeRace &&
+        activeRace.status !== "finished" &&
+        Object.values(players).every((player) => player.finished)
+      ) {
+        activeRace.status = "finished";
+      }
 
       // Notifica a tutti i client rimasti la rimozione del giocatore e il nuovo host
       broadcastAll({

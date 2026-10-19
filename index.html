@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0"
     />
     <title>
       GRAN TURISMO F1 WEBGL // Simulatore di Guida Procedurale 60FPS
@@ -69,11 +69,11 @@
                 GRAN TURISMO <span class="text-amber-400">F1 EDITION</span>
               </h1>
               <span
-                class="text-[10px] font-racing uppercase px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-400/30"
+                class="text-[10px] font-racing uppercase px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 hidden sm:inline"
                 >60FPS AI Engine</span
               >
             </div>
-            <p class="text-xs text-slate-400 hidden sm:block">
+            <p class="text-xs text-slate-400 hidden xl:block">
               25 Circuiti Mondiali F1 • Griglia 12 Vetture • Racing Line AI
             </p>
           </div>
@@ -81,38 +81,50 @@
 
         <!-- Navigation Tabs -->
         <nav
-          class="flex items-center bg-slate-950/70 rounded-xl p-1 border border-white/10 order-3 xl:order-2 w-full xl:w-auto justify-around"
+          class="flex items-center bg-slate-950/70 rounded-xl p-1 border border-white/10 order-3 xl:order-2 w-full xl:w-auto justify-around flex-wrap gap-1"
         >
+          <button
+            onclick="UI.switchTab('championship')"
+            id="tab-championship"
+            class="gt-tab flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-amber-300 hover:text-amber-200 transition"
+          >
+            <i class="fa-solid fa-trophy text-amber-400 text-xs sm:text-sm" aria-hidden="true"></i>
+            <span class="hidden md:inline">CAMPIONATO F1</span>
+            <span class="md:hidden">CAMPIONATO</span>
+          </button>
           <button
             onclick="UI.switchTab('race')"
             id="tab-race"
-            class="gt-tab active flex items-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300"
+            class="gt-tab active flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300 transition"
           >
-            <i class="fa-solid fa-flag-checkered text-amber-400"></i>
-            <span>GP WORLD SERIES</span>
+            <i class="fa-solid fa-flag-checkered text-amber-400 text-xs sm:text-sm" aria-hidden="true"></i>
+            <span class="hidden md:inline">GARA SINGOLA</span>
+            <span class="md:hidden">GARA</span>
           </button>
           <button
             onclick="UI.switchTab('freeplay')"
             id="tab-freeplay"
-            class="gt-tab flex items-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300"
+            class="gt-tab flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-cyan-300 hover:text-cyan-200 transition"
           >
-            <i class="fa-solid fa-road text-cyan-400"></i>
-            <span>FREE PLAY</span>
+            <i class="fa-solid fa-road text-cyan-400 text-xs sm:text-sm" aria-hidden="true"></i>
+            <span class="hidden md:inline">CORSA LIBERA</span>
+            <span class="md:hidden">LIBERA</span>
           </button>
           <button
             onclick="UI.switchTab('dealership')"
             id="tab-dealership"
-            class="gt-tab flex items-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300"
+            class="gt-tab flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300 transition"
           >
-            <i class="fa-solid fa-shop text-emerald-400"></i>
-            <span>CONCESSIONARIO</span>
+            <i class="fa-solid fa-shop text-emerald-400 text-xs sm:text-sm" aria-hidden="true"></i>
+            <span class="hidden lg:inline">CONCESSIONARIO</span>
+            <span class="lg:hidden">CONCESS.</span>
           </button>
           <button
             onclick="UI.switchTab('garage')"
             id="tab-garage"
-            class="gt-tab flex items-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300"
+            class="gt-tab flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-slate-300 transition"
           >
-            <i class="fa-solid fa-warehouse text-purple-400"></i>
+            <i class="fa-solid fa-warehouse text-purple-400 text-xs sm:text-sm" aria-hidden="true"></i>
             <span>GARAGE</span>
             <span
               id="header-garage-count"
@@ -123,10 +135,11 @@
           <button
             onclick="UI.switchTab('multiplayer')"
             id="tab-multiplayer"
-            class="gt-tab flex items-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-emerald-400"
+            class="gt-tab flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg font-racing text-xs sm:text-sm font-bold text-emerald-400 transition"
           >
-            <i class="fa-solid fa-wifi text-emerald-400"></i>
-            <span>MULTIPLAYER LAN</span>
+            <i class="fa-solid fa-wifi text-emerald-400 text-xs sm:text-sm" aria-hidden="true"></i>
+            <span class="hidden md:inline">MULTIPLAYER LAN</span>
+            <span class="md:hidden">LAN</span>
           </button>
         </nav>
 
@@ -193,9 +206,10 @@
             onclick="AudioEngine.toggleMute()"
             id="btn-audio-toggle"
             title="Attiva/Disattiva Audio"
+            aria-label="Attiva/Disattiva Audio"
             class="w-9 h-9 rounded-lg bg-slate-900 hover:bg-slate-800 border border-white/10 flex items-center justify-center text-slate-300 hover:text-white transition"
           >
-            <i id="icon-audio" class="fa-solid fa-volume-high text-sm"></i>
+            <i id="icon-audio" class="fa-solid fa-volume-high text-sm" aria-hidden="true"></i>
           </button>
 
           <!-- Reset Profile Button -->
@@ -204,7 +218,7 @@
             title="Resetta Profilo"
             class="px-2.5 py-2 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 text-rose-300 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition"
           >
-            <i class="fa-solid fa-rotate-left"></i>
+            <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
             <span class="hidden lg:inline">Resetta Profilo</span>
           </button>
         </div>
@@ -215,26 +229,26 @@
       <!-- ========================================== -->
       <main
         id="menu-main"
-        class="flex-1 flex flex-col justify-between p-4 sm:p-6 lg:p-8 overflow-y-auto"
+        class="flex-1 flex flex-col justify-between p-3 sm:p-5 lg:p-7 overflow-y-auto pointer-auto"
       >
         <!-- 1. TAB: GP WORLD SERIES (RACE) & 2. TAB: FREE PLAY -->
         <section
           id="screen-tracks"
-          class="w-full max-w-7xl mx-auto my-auto flex flex-col gap-5"
+          class="w-full max-w-7xl mx-auto my-auto flex flex-col gap-4 pointer-auto"
         >
           <!-- Mode & Grid Setup Banner -->
           <div
-            class="glass-panel rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 border-l-4 border-l-amber-400 pointer-auto"
+            class="glass-panel rounded-2xl p-3.5 sm:p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 sm:gap-4 border-l-4 border-l-amber-400 pointer-auto"
           >
             <div>
-              <div class="flex flex-wrap items-center gap-2.5">
+              <div class="flex flex-wrap items-center gap-2">
                 <span
                   id="mode-badge"
                   class="px-2.5 py-0.5 rounded text-xs font-racing font-bold uppercase bg-amber-400 text-slate-950"
-                  >CAMPIONATO F1 / GT</span
+                  >GARA SINGOLA GP</span
                 >
                 <span
-                  class="text-xs text-slate-300 font-medium"
+                  class="text-xs text-slate-300 font-medium hidden md:inline"
                   id="mode-subtitle"
                   >25 Circuiti Ufficiali F1 • IA con Racing Line, Sensori Raycast
                   & Sorpassi</span
@@ -242,11 +256,11 @@
               </div>
               <h2
                 id="mode-title"
-                class="font-racing text-xl sm:text-2xl font-black text-white mt-1 tracking-wide"
+                class="font-racing text-lg sm:text-2xl font-black text-white mt-1 tracking-wide"
               >
-                GRAN TURISMO GP WORLD SERIES
+                GRAN PREMIO SINGOLO F1
               </h2>
-              <p id="mode-desc" class="text-xs text-slate-300 mt-1 max-w-2xl">
+              <p id="mode-desc" class="text-xs text-slate-300 mt-1 max-w-2xl hidden lg:block">
                 Sfida fino a 11 piloti CPU dotati di profilazione della velocità
                 in curva, sensori di prossimità tripli, difesa traiettoria ed
                 errori umani sotto pressione.
@@ -255,49 +269,49 @@
 
             <!-- Right: Grid Size Selector, Laps Selector & Equipped Car Box -->
             <div
-              class="w-full lg:w-auto flex flex-wrap sm:flex-nowrap items-center gap-3"
+              class="w-full lg:w-auto flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3"
             >
               <!-- Race Grid Size & Laps Config -->
               <div
                 id="race-config-controls"
-                class="bg-slate-900/90 border border-white/10 rounded-xl p-2.5 flex items-center gap-3"
+                class="bg-slate-900/90 border border-white/10 rounded-xl p-2 sm:p-2.5 flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap"
               >
                 <div>
                   <div
-                    class="text-[10px] uppercase tracking-wider text-slate-400"
+                    class="text-[9px] sm:text-[10px] uppercase tracking-wider text-slate-400"
                   >
-                    Griglia Partenza
+                    Griglia
                   </div>
                   <div class="flex items-center gap-1 mt-1">
                     <button
                       onclick="UI.setGridSize(8)"
                       id="grid-btn-8"
-                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300 transition"
                     >
                       8
                     </button>
                     <button
                       onclick="UI.setGridSize(10)"
                       id="grid-btn-10"
-                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-amber-400 text-slate-950"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-amber-400 text-slate-950 transition"
                     >
                       10
                     </button>
                     <button
                       onclick="UI.setGridSize(12)"
                       id="grid-btn-12"
-                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300 transition"
                     >
-                      12 AUTO
+                      12
                     </button>
                   </div>
                 </div>
-                <div class="h-8 w-px bg-white/10"></div>
+                <div class="h-7 w-px bg-white/10 hidden sm:block"></div>
                 <div>
                   <div
-                    class="text-[10px] uppercase tracking-wider text-slate-400"
+                    class="text-[9px] sm:text-[10px] uppercase tracking-wider text-slate-400"
                   >
-                    Giri GP
+                    Giri
                   </div>
                   <div class="flex items-center gap-1 mt-1">
                     <button
@@ -312,7 +326,14 @@
                       id="laps-btn-3"
                       class="px-2 py-1 rounded text-xs font-racing font-bold bg-cyan-400 text-slate-950 transition"
                     >
-                      3 GIRI
+                      3
+                    </button>
+                    <button
+                      onclick="UI.setRaceLaps(5)"
+                      id="laps-btn-5"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300 transition"
+                    >
+                      5 GIRI
                     </button>
                   </div>
                 </div>
@@ -324,7 +345,7 @@
                     <span>Difficoltà CPU</span>
                     <span
                       id="diff-payout-badge"
-                      class="px-1.5 py-0.2 rounded text-[9px] font-racing font-bold bg-amber-400/20 text-amber-300 border border-amber-400/40"
+                      class="px-1.5 py-0.5 rounded text-[9px] font-racing font-bold bg-amber-400/20 text-amber-300 border border-amber-400/40"
                       >+50% PREMIO</span
                     >
                   </div>
@@ -361,6 +382,21 @@
                     >
                       LEGGENDA
                     </button>
+                  </div>
+                </div>
+                <div class="h-8 w-px bg-white/10 hidden sm:block"></div>
+                <div>
+                  <div class="text-[9px] sm:text-[10px] uppercase tracking-wider text-slate-400">Qualità</div>
+                  <div class="flex items-center gap-1 mt-1">
+                    <button onclick="UI.setGraphicsQuality('high')" id="quality-btn-high"
+                      title="Alta: pixel ratio fino a 1.5x, bloom, ombre soft"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-amber-400 text-slate-950 transition">ALTA</button>
+                    <button onclick="UI.setGraphicsQuality('medium')" id="quality-btn-medium"
+                      title="Media: pixel ratio 1.0x, bloom ridotto"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300 transition hover:bg-slate-700">MEDIA</button>
+                    <button onclick="UI.setGraphicsQuality('low')" id="quality-btn-low"
+                      title="Bassa: risoluzione ridotta, senza bloom né ombre"
+                      class="px-2 py-1 rounded text-xs font-racing font-bold bg-slate-800 text-slate-300 transition hover:bg-slate-700">BASSA</button>
                   </div>
                 </div>
               </div>
@@ -400,10 +436,10 @@
             </div>
           </div>
 
-          <!-- 5 F1 Track Cards Grid -->
+          <!-- 25 F1 Track Cards Grid (Responsive & Adaptive) -->
           <div
             id="tracks-grid"
-            class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 pointer-auto"
+            class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 pointer-auto max-h-[calc(100vh-250px)] overflow-y-auto pr-1"
           >
             <!-- Populated dynamically by JS -->
           </div>
@@ -775,7 +811,7 @@
                     onclick="GameApp.buySelectedCar()"
                     class="gt-btn gt-btn-gold w-full py-3 px-4 rounded-xl font-racing font-bold text-sm uppercase tracking-wider bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 shadow-lg flex items-center justify-center gap-2"
                   >
-                    <i class="fa-solid fa-cart-shopping"></i>
+                    <i class="fa-solid fa-cart-shopping" aria-hidden="true"></i>
                     <span>ACQUISTA VETTURA</span>
                   </button>
                   <button
@@ -783,7 +819,7 @@
                     onclick="GameApp.equipSelectedCar()"
                     class="gt-btn hidden w-full py-3 px-4 rounded-xl font-racing font-bold text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 shadow-lg items-center justify-center gap-2"
                   >
-                    <i class="fa-solid fa-key"></i>
+                    <i class="fa-solid fa-key" aria-hidden="true"></i>
                     <span>GUIDA QUESTA VETTURA</span>
                   </button>
 
@@ -795,7 +831,7 @@
                       class="gt-btn py-2.5 px-2 rounded-xl font-racing font-bold text-[11px] uppercase tracking-wider bg-slate-800/95 hover:bg-amber-400 hover:text-slate-950 text-amber-300 border border-amber-400/40 transition flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
                       title="Ascolta il rombo del motore da fermo con limitatore a rimbalzo e fiammate"
                     >
-                      <i class="fa-solid fa-volume-high text-amber-400"></i>
+                      <i class="fa-solid fa-volume-high text-amber-400" aria-hidden="true"></i>
                       <span>TEST SOUND (REV)</span>
                     </button>
                     <button
@@ -804,7 +840,7 @@
                       class="gt-btn py-2.5 px-2 rounded-xl font-racing font-bold text-[11px] uppercase tracking-wider bg-red-950/40 hover:bg-red-600 hover:text-white text-red-300 border border-red-500/50 transition flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
                       title="Guarda i video on-board reali con pure sound e cambio sequenziale"
                     >
-                      <i class="fa-brands fa-youtube text-red-500"></i>
+                      <i class="fa-brands fa-youtube text-red-500" aria-hidden="true"></i>
                       <span>VIDEO ONBOARD</span>
                     </button>
                   </div>
@@ -814,82 +850,126 @@
           </div>
         </section>
 
-        <!-- 5. TAB: MULTIPLAYER LAN LOBBY & PRE-RACE -->
+        <!-- 5. TAB: MULTIPLAYER LAN LOBBY & PRE-RACE (FIA ESPORTS PADDOCK) -->
         <section
           id="screen-multiplayer"
-          class="hidden w-full max-w-7xl mx-auto my-auto flex-col gap-6 pointer-auto"
+          class="hidden w-full max-w-7xl mx-auto my-auto flex-col gap-5 pointer-auto max-h-[calc(100vh-140px)] overflow-y-auto pr-1"
         >
           <!-- Top LAN Banner & Status -->
           <div
-            class="glass-panel rounded-2xl p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-l-4 border-l-emerald-400"
+            class="glass-panel rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-l-4 border-l-cyan-400"
           >
             <div>
-              <div class="flex items-center gap-2.5">
+              <div class="flex flex-wrap items-center gap-2">
                 <span
-                  class="px-2.5 py-0.5 rounded text-xs font-racing font-bold uppercase bg-emerald-400 text-slate-950"
-                  >LAN MULTIPLAYER 30HZ</span
+                  class="px-2.5 py-0.5 rounded text-xs font-racing font-bold uppercase bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 flex items-center gap-1.5 shadow-md shadow-cyan-500/20"
                 >
+                  <i class="fa-solid fa-satellite-dish text-xs"></i>
+                  <span>LAN MULTIPLAYER 30HZ</span>
+                </span>
                 <div id="lan-status-box">
-                  <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-racing font-bold bg-slate-800 text-slate-400 border border-white/10">
+                  <span class="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-racing font-bold bg-slate-800 text-slate-400 border border-white/10">
                     <span class="w-2 h-2 rounded-full bg-slate-500"></span>
                     OFFLINE
                   </span>
                 </div>
               </div>
               <h2
-                class="font-racing text-xl sm:text-2xl font-black text-white mt-1.5 tracking-wide"
+                class="font-racing text-xl sm:text-2xl font-black text-white mt-1.5 tracking-wide flex items-center gap-2"
               >
-                LOBBY DI GARA IN RETE LOCALE
+                <span>FIA ESPORTS PADDOCK</span>
+                <span class="text-xs font-normal text-slate-400 font-sans hidden sm:inline">• Sincronizzazione 30Hz al millisecondo</span>
               </h2>
-              <p class="text-xs text-slate-300 mt-1 max-w-2xl">
-                Sfida amici e colleghi connessi alla stessa rete Wi-Fi o cavo LAN. Sincronizzazione a 30Hz con interpolazione fluida a 60 FPS senza scatti.
+              <p class="text-xs text-slate-300 mt-0.5 max-w-2xl">
+                Sfida piloti connessi alla stessa rete Wi-Fi o LAN in gare singole o nell'esclusivo Campionato Mondiale a Tappe FIA.
               </p>
             </div>
 
-            <!-- Ping realtime indicator -->
-            <div class="bg-slate-900/90 border border-white/10 rounded-xl px-4 py-2 flex items-center gap-3">
-              <div class="text-right">
-                <div class="text-[10px] uppercase tracking-wider text-slate-400">Latenza LAN (RTT)</div>
-                <div id="lan-ping-val" class="font-racing font-bold text-slate-400">-- ms</div>
+            <!-- Ping realtime indicator & Mode Tabs -->
+            <div class="flex flex-wrap items-center gap-3">
+              <!-- Mode Selection Tabs -->
+              <div class="bg-slate-950/90 border border-white/15 rounded-xl p-1 flex items-center gap-1">
+                <button
+                  id="lan-tab-single"
+                  onclick="UI.setLanGameMode('single_race')"
+                  class="px-3 py-1.5 rounded-lg font-racing font-bold text-xs uppercase transition flex items-center gap-1.5 bg-cyan-500 text-slate-950 shadow cursor-pointer"
+                >
+                  <i class="fa-solid fa-flag-checkered text-[11px]" aria-hidden="true"></i>
+                  <span>Gara Singola</span>
+                </button>
+                <button
+                  id="lan-tab-champ"
+                  onclick="UI.setLanGameMode('championship')"
+                  class="px-3 py-1.5 rounded-lg font-racing font-bold text-xs uppercase transition flex items-center gap-1.5 bg-slate-900 text-slate-300 hover:text-white cursor-pointer"
+                >
+                  <i class="fa-solid fa-trophy text-amber-400 text-[11px]" aria-hidden="true"></i>
+                  <span>Gran Premio (GP)</span>
+                </button>
               </div>
-              <div class="w-8 h-8 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-emerald-400">
-                <i class="fa-solid fa-network-wired"></i>
+
+              <!-- Ping Radar -->
+              <div class="bg-slate-900/90 border border-white/10 rounded-xl px-3.5 py-1.5 flex items-center gap-3">
+                <div class="text-right">
+                  <div class="text-[9px] uppercase tracking-wider text-slate-400">Latenza LAN (RTT)</div>
+                  <div id="lan-ping-val" class="font-racing font-bold text-slate-400 text-sm">-- ms</div>
+                </div>
+                <div class="w-8 h-8 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-cyan-400 text-sm">
+                  <i class="fa-solid fa-network-wired"></i>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- Grid: Configurazione Pilota (Sinistra) + Stanza & Giocatori (Destra) -->
-          <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <!-- Left: Configurazione Connessione, Nickname, Colore e Auto -->
-            <div class="lg:col-span-5 glass-panel rounded-2xl p-5 flex flex-col gap-5 border border-white/10">
-              <h3 class="font-racing text-xs uppercase tracking-widest text-emerald-400 font-bold flex items-center justify-between pb-2 border-b border-white/10">
-                <span>CONFIGURAZIONE PILOTA & CONNESSIONE</span>
+          <!-- Grid: Configurazione Pilota (Sinistra) + Paddock & Griglia (Destra) -->
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <!-- Left Column: Configurazione Connessione, Nickname, Colore e Auto -->
+            <div class="lg:col-span-5 glass-panel rounded-2xl p-4 sm:p-5 flex flex-col gap-4 border border-white/10">
+              <h3 class="font-racing text-xs uppercase tracking-widest text-cyan-400 font-bold flex items-center justify-between pb-2 border-b border-white/10">
+                <span>CONFIGURAZIONE COCKPIT & PILOTA</span>
                 <i class="fa-solid fa-sliders"></i>
               </h3>
 
-              <!-- Server IP Input -->
-              <div>
-                <label class="block text-xs font-racing font-semibold text-slate-300 mb-1.5">
+              <!-- Server IP Input & Quick Connect -->
+              <div class="bg-slate-950/60 p-3 rounded-xl border border-white/5 space-y-2">
+                <label for="lan-server-ip" class="block text-xs font-racing font-semibold text-slate-300">
                   Indirizzo Server LAN (IP:Porta)
                 </label>
-                <div class="relative">
-                  <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-xs">
-                    <i class="fa-solid fa-server"></i>
-                  </span>
-                  <input
-                    type="text"
-                    id="lan-server-ip"
-                    value="localhost:3000"
-                    placeholder="es. 192.168.1.150:3000 o localhost:3000"
-                    class="w-full bg-slate-950/80 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-400"
-                  />
+                <div class="flex items-center gap-2">
+                  <div class="relative flex-1">
+                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-xs">
+                      <i class="fa-solid fa-server"></i>
+                    </span>
+                    <input
+                      type="text"
+                      id="lan-server-ip"
+                      value="localhost:3000"
+                      placeholder="es. 192.168.1.150:3000 o localhost:3000"
+                      class="w-full bg-slate-900 border border-white/15 rounded-lg pl-8 pr-2.5 py-1.5 text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                  <button
+                    id="btn-lan-connect"
+                    onclick="UI.connectToLan()"
+                    class="px-3.5 py-1.5 rounded-lg font-racing font-bold text-xs uppercase bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md transition flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <i class="fa-solid fa-plug text-[11px]" aria-hidden="true"></i>
+                    <span>Connetti</span>
+                  </button>
+                  <button
+                    id="btn-lan-disconnect"
+                    onclick="UI.disconnectFromLan()"
+                    class="hidden px-3.5 py-1.5 rounded-lg font-racing font-bold text-xs uppercase bg-rose-600 hover:bg-rose-500 text-white shadow-md transition items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <i class="fa-solid fa-power-off text-[11px]" aria-hidden="true"></i>
+                    <span>Esci</span>
+                  </button>
                 </div>
-                <p class="text-[10px] text-slate-400 mt-1">Avvia prima il server con <code class="text-amber-300">node server.js</code></p>
+                <p class="text-[10px] text-slate-400">Avvia il server con <code class="text-amber-300">node server.js</code> sul computer Host.</p>
               </div>
 
               <!-- Nickname Input -->
               <div>
-                <label class="block text-xs font-racing font-semibold text-slate-300 mb-1.5">
+                <label for="lan-nickname" class="block text-xs font-racing font-semibold text-slate-300 mb-1">
                   Nickname Pilota
                 </label>
                 <div class="relative">
@@ -903,60 +983,81 @@
                     value="Pilota GT"
                     oninput="UI.onLanNicknameInput(this.value)"
                     placeholder="Il tuo nome in gara"
-                    class="w-full bg-slate-950/80 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs font-racing font-bold text-white focus:outline-none focus:border-emerald-400"
+                    class="w-full bg-slate-950/80 border border-white/15 rounded-xl pl-9 pr-3 py-2 text-xs font-racing font-bold text-white focus:outline-none focus:border-cyan-400"
                   />
                 </div>
               </div>
 
-              <!-- Carrozzeria Color Picker (Palette Arcade) -->
+              <!-- Carrozzeria Color Picker (Palette Arcade Metallizzata) -->
               <div>
-                <label class="block text-xs font-racing font-semibold text-slate-300 mb-2">
-                  Colore Carrozzeria Vettura
+                <label class="block text-xs font-racing font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Colore Carrozzeria Vettura</span>
+                  <span class="text-[10px] text-slate-400 font-sans">8 Livree Ufficiali</span>
                 </label>
-                <div class="flex items-center gap-3">
+                <div class="grid grid-cols-8 gap-2">
+                  <button
+                    onclick="UI.setLanColor('#ff1801')"
+                    id="lan-color-ff1801"
+                    title="Rosso Corsa"
+                    aria-label="Rosso Corsa"
+                    class="h-8 rounded-lg bg-[#ff1801] shadow-md hover:scale-110 transition cursor-pointer"
+                  ></button>
                   <button
                     onclick="UI.setLanColor('#00f0ff')"
                     id="lan-color-00f0ff"
                     title="Ciano Neon"
-                    class="w-9 h-9 rounded-xl bg-[#00f0ff] shadow-lg shadow-cyan-500/20 hover:scale-110 transition cursor-pointer"
-                    style="outline: 3px solid white;"
+                    aria-label="Ciano Neon"
+                    class="h-8 rounded-lg bg-[#00f0ff] shadow-md hover:scale-110 transition cursor-pointer"
+                    style="outline: 2px solid white;"
                   ></button>
                   <button
-                    onclick="UI.setLanColor('#ff3b1f')"
-                    id="lan-color-ff3b1f"
-                    title="Rosso Corsa"
-                    class="w-9 h-9 rounded-xl bg-[#ff3b1f] shadow-lg shadow-rose-500/20 hover:scale-110 transition cursor-pointer"
+                    onclick="UI.setLanColor('#ffea00')"
+                    id="lan-color-ffea00"
+                    title="Giallo Modena"
+                    aria-label="Giallo Modena"
+                    class="h-8 rounded-lg bg-[#ffea00] shadow-md hover:scale-110 transition cursor-pointer"
                   ></button>
                   <button
-                    onclick="UI.setLanColor('#facc15')"
-                    id="lan-color-facc15"
-                    title="Giallo Oro"
-                    class="w-9 h-9 rounded-xl bg-[#facc15] shadow-lg shadow-yellow-500/20 hover:scale-110 transition cursor-pointer"
-                  ></button>
-                  <button
-                    onclick="UI.setLanColor('#10b981')"
-                    id="lan-color-10b981"
-                    title="Verde Smeraldo"
-                    class="w-9 h-9 rounded-xl bg-[#10b981] shadow-lg shadow-emerald-500/20 hover:scale-110 transition cursor-pointer"
+                    onclick="UI.setLanColor('#005930')"
+                    id="lan-color-005930"
+                    title="British Racing Green"
+                    aria-label="British Racing Green"
+                    class="h-8 rounded-lg bg-[#005930] shadow-md hover:scale-110 transition cursor-pointer"
                   ></button>
                   <button
                     onclick="UI.setLanColor('#a855f7')"
                     id="lan-color-a855f7"
                     title="Viola Magenta"
-                    class="w-9 h-9 rounded-xl bg-[#a855f7] shadow-lg shadow-purple-500/20 hover:scale-110 transition cursor-pointer"
+                    aria-label="Viola Magenta"
+                    class="h-8 rounded-lg bg-[#a855f7] shadow-md hover:scale-110 transition cursor-pointer"
                   ></button>
                   <button
-                    onclick="UI.setLanColor('#f97316')"
-                    id="lan-color-f97316"
-                    title="Arancio Nitro"
-                    class="w-9 h-9 rounded-xl bg-[#f97316] shadow-lg shadow-orange-500/20 hover:scale-110 transition cursor-pointer"
+                    onclick="UI.setLanColor('#ff7a00')"
+                    id="lan-color-ff7a00"
+                    title="Arancio McLaren"
+                    aria-label="Arancio McLaren"
+                    class="h-8 rounded-lg bg-[#ff7a00] shadow-md hover:scale-110 transition cursor-pointer"
+                  ></button>
+                  <button
+                    onclick="UI.setLanColor('#7b858f')"
+                    id="lan-color-7b858f"
+                    title="Grigio Nardo"
+                    aria-label="Grigio Nardo"
+                    class="h-8 rounded-lg bg-[#7b858f] shadow-md hover:scale-110 transition cursor-pointer"
+                  ></button>
+                  <button
+                    onclick="UI.setLanColor('#18181b')"
+                    id="lan-color-18181b"
+                    title="Midnight Black"
+                    aria-label="Midnight Black"
+                    class="h-8 rounded-lg bg-[#18181b] border border-white/20 shadow-md hover:scale-110 transition cursor-pointer"
                   ></button>
                 </div>
               </div>
 
-              <!-- Modello Auto Selezionato -->
+              <!-- Modello Auto Selezionato + Specs Visualizer Card -->
               <div>
-                <label class="block text-xs font-racing font-semibold text-slate-300 mb-1.5">
+                <label for="lan-car-select" class="block text-xs font-racing font-semibold text-slate-300 mb-1">
                   Vettura da Gara
                 </label>
                 <select
@@ -964,43 +1065,331 @@
                   onchange="UI.setLanCar(this.value)"
                   class="w-full bg-slate-950/80 border border-white/15 rounded-xl px-3 py-2 text-xs font-racing font-bold text-cyan-300 focus:outline-none focus:border-cyan-400"
                 >
-                  <option value="hatchback">CIVIC TYPE-GT (Classe Entry • FWD)</option>
+                  <option value="hatchback">CIVIC TYPE-GT (Classe C • FWD)</option>
                   <option value="muscle">STALLION V8 500 (Classe B • RWD)</option>
                   <option value="gt_comp">APEX GT3 RS (Classe A • MR)</option>
                   <option value="hypercar">VALKYRIE X-PROTO (Classe S • AWD)</option>
                 </select>
-              </div>
 
-              <!-- Connection Buttons -->
-              <div class="mt-2 pt-3 border-t border-white/10 flex flex-col gap-2">
-                <button
-                  id="btn-lan-connect"
-                  onclick="UI.connectToLan()"
-                  class="w-full py-3 px-4 rounded-xl font-racing font-bold text-xs sm:text-sm uppercase tracking-wider bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <i class="fa-solid fa-plug"></i>
-                  <span>CONNETTI ALLA LOBBY LAN</span>
-                </button>
-                <button
-                  id="btn-lan-disconnect"
-                  onclick="UI.disconnectFromLan()"
-                  class="hidden w-full py-2.5 px-4 rounded-xl font-racing font-bold text-xs uppercase tracking-wider bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 transition items-center justify-center gap-2 cursor-pointer"
-                >
-                  <i class="fa-solid fa-power-off"></i>
-                  <span>DISCONNETTI DAL SERVER</span>
-                </button>
+                <!-- Mini Car Specs Card -->
+                <div id="lan-car-spec-card" class="mt-2.5 bg-slate-950/80 border border-cyan-400/20 rounded-xl p-3 flex flex-col gap-2">
+                  <div class="flex items-center justify-between text-xs font-racing">
+                    <span id="lan-spec-car-name" class="font-black text-white">CIVIC TYPE-GT</span>
+                    <span id="lan-spec-drive-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-400/40">FWD</span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-2 text-center text-[10px] font-racing pt-1 border-t border-white/5">
+                    <div class="bg-slate-900/80 rounded-lg p-1.5">
+                      <span class="text-slate-400 block text-[9px]">POTENZA</span>
+                      <span id="lan-spec-hp" class="font-bold text-white text-xs">220 CV</span>
+                    </div>
+                    <div class="bg-slate-900/80 rounded-lg p-1.5">
+                      <span class="text-slate-400 block text-[9px]">VEL. MAX</span>
+                      <span id="lan-spec-speed" class="font-bold text-amber-300 text-xs">192 KM/H</span>
+                    </div>
+                    <div class="bg-slate-900/80 rounded-lg p-1.5">
+                      <span class="text-slate-400 block text-[9px]">MASSA</span>
+                      <span id="lan-spec-weight" class="font-bold text-slate-300 text-xs">1.150 KG</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <!-- Right: Stanza di Gioco, Piloti Connessi e Controlli Host -->
-            <div class="lg:col-span-7 flex flex-col gap-5">
-              <!-- Box Giocatori Connessi -->
-              <div class="glass-panel rounded-2xl p-5 border border-white/10 flex-1 flex flex-col justify-between">
+            <!-- Right Column: Stanza di Gioco, Pit Boxes & Controlli Host/Guest -->
+            <div class="lg:col-span-7 flex flex-col gap-4">
+              <!-- Room Info Header Bar -->
+              <div id="lan-room-info-bar" class="hidden bg-slate-900/90 border border-cyan-400/30 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-9 h-9 rounded-xl bg-amber-400/20 border border-amber-400/50 flex items-center justify-center text-amber-400 text-sm shadow">
+                    <i class="fa-solid fa-crown"></i>
+                  </div>
+                  <div>
+                    <div class="text-[9px] uppercase font-racing text-slate-400 leading-none">Direttore di Gara (Host)</div>
+                    <div id="lan-room-host-display" class="font-racing font-black text-amber-300 text-sm mt-0.5">In attesa...</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-4 text-xs font-racing">
+                  <div class="text-right">
+                    <span class="text-[9px] uppercase text-slate-400 block" id="lan-room-mode-label">MODALITÀ STANZA</span>
+                    <span id="lan-room-track-display" class="font-bold text-cyan-300">GARA SINGOLA</span>
+                  </div>
+                  <div class="h-6 w-px bg-white/10"></div>
+                  <div class="text-right">
+                    <span class="text-[9px] uppercase text-slate-400 block">FORMATO</span>
+                    <span id="lan-room-laps-display" class="font-bold text-white">3 Giri</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- CONTROLLI HOST: Pannello Gara Singola -->
+              <div id="lan-host-single-controls" class="glass-panel rounded-2xl p-4 border border-cyan-400/30 bg-slate-950/70 space-y-3">
+                <div class="flex items-center justify-between pb-2 border-b border-white/10">
+                  <span class="font-racing text-xs uppercase tracking-widest text-cyan-400 font-bold flex items-center gap-1.5">
+                    <i class="fa-solid fa-crown text-amber-400"></i>
+                    <span>SETUP GARA SINGOLA RAPIDA (HOST)</span>
+                  </span>
+                  <span class="text-[10px] text-slate-400 font-racing">25 Piste Ufficiali</span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label for="lan-track-select" class="block text-slate-300 font-semibold mb-1">Circuito di Gara</label>
+                    <select
+                      id="lan-track-select"
+                      onchange="UI.setLanTrack(this.value)"
+                      class="w-full bg-slate-900 border border-white/20 rounded-xl px-2.5 py-2 text-white font-racing focus:outline-none focus:border-cyan-400"
+                    >
+                      <option value="monza" selected>MONZA GP (Italia)</option>
+                      <option value="spa">SPA-FRANCORCHAMPS (Belgio)</option>
+                      <option value="silverstone">SILVERSTONE GP (UK)</option>
+                      <option value="spielberg">RED BULL RING (Austria)</option>
+                      <option value="suzuka">SUZUKA GP (Giappone)</option>
+                      <option value="austin">COTA - AUSTIN GP (USA)</option>
+                      <option value="melbourne">ALBERT PARK GP (Australia)</option>
+                      <option value="catalunya">BARCELONA-CATALUNYA (Spagna)</option>
+                      <option value="sao_paulo">INTERLAGOS - SÃO PAULO (Brasile)</option>
+                      <option value="zandvoort">ZANDVOORT GP (Olanda)</option>
+                      <option value="yas_marina">YAS MARINA - ABU DHABI (EAU)</option>
+                      <option value="sakhir">BAHRAIN - SAKHIR GP (Bahrain)</option>
+                      <option value="budapest">HUNGARORING GP (Ungheria)</option>
+                      <option value="montreal">MONTREAL GP (Canada)</option>
+                      <option value="mexico_city">HERMANOS RODRÍGUEZ (Messico)</option>
+                      <option value="shanghai">SHANGHAI GP (Cina)</option>
+                      <option value="sepang">SEPANG GP (Malesia)</option>
+                      <option value="nuerburgring">NÜRBURGRING GP (Germania)</option>
+                      <option value="hockenheim">HOCKENHEIMRING (Germania)</option>
+                      <option value="brands_hatch">BRANDS HATCH GP (UK)</option>
+                      <option value="ims">INDIANAPOLIS GP (USA)</option>
+                      <option value="norisring">NORISRING SPEEDWAY (Germania)</option>
+                      <option value="oschersleben">OSCHERSLEBEN ARENA (Germania)</option>
+                      <option value="sochi">SOCHI AUTODROM (Russia)</option>
+                      <option value="moscow_raceway">MOSCOW RACEWAY (Russia)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-slate-300 font-semibold mb-1">Giri di Gara</label>
+                    <div class="grid grid-cols-4 gap-1.5 mt-1">
+                      <button
+                        onclick="UI.setLanLaps(2)"
+                        id="lan-laps-btn-2"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs hover:bg-slate-700 cursor-pointer"
+                      >2</button>
+                      <button
+                        onclick="UI.setLanLaps(3)"
+                        id="lan-laps-btn-3"
+                        class="py-1.5 rounded-lg bg-cyan-400 text-slate-950 font-racing font-bold text-xs cursor-pointer"
+                      >3</button>
+                      <button
+                        onclick="UI.setLanLaps(5)"
+                        id="lan-laps-btn-5"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs hover:bg-slate-700 cursor-pointer"
+                      >5</button>
+                      <button
+                        onclick="UI.setLanLaps(10)"
+                        id="lan-laps-btn-10"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs hover:bg-slate-700 cursor-pointer"
+                      >10</button>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onclick="UI.startLanRace()"
+                  class="w-full py-3 px-4 rounded-xl font-racing font-black text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-400 via-teal-300 to-emerald-400 text-slate-950 shadow-xl shadow-cyan-500/20 hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <i class="fa-solid fa-flag-checkered text-base" aria-hidden="true"></i>
+                  <span>AVVIA GARA LAN RAPIDA (SEMAFORO SINCRONIZZATO)</span>
+                </button>
+              </div>
+
+              <!-- CONTROLLI HOST: Pannello Gran Premio F1 a Tappe -->
+              <div id="lan-host-champ-controls" class="hidden glass-panel rounded-2xl p-4 border border-amber-400/40 bg-slate-950/70 space-y-3">
+                <div class="flex items-center justify-between pb-2 border-b border-white/10">
+                  <span class="font-racing text-xs uppercase tracking-widest text-amber-400 font-bold flex items-center gap-1.5">
+                    <i class="fa-solid fa-trophy text-amber-400"></i>
+                    <span>CONFIGURAZIONE GRAN PREMIO A TAPPE (HOST)</span>
+                  </span>
+                  <span class="px-2 py-0.5 rounded text-[9px] font-racing font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">PUNTI FIA F1</span>
+                </div>
+
+                <!-- Preset Torneo -->
+                <div>
+                  <label class="block text-slate-300 font-semibold text-xs mb-1.5">Preset Campionato</label>
+                  <div class="grid grid-cols-3 gap-2">
+                    <button
+                      onclick="UI.setLanPreset('euro_tour')"
+                      id="lan-preset-euro_tour"
+                      class="p-2.5 rounded-xl border border-amber-400 bg-amber-400/20 text-left cursor-pointer transition"
+                    >
+                      <div class="font-racing font-bold text-xs text-white">TOUR EUROPEO</div>
+                      <div class="text-[10px] text-amber-300 mt-0.5">4 Tappe • Leggende F1</div>
+                    </button>
+                    <button
+                      onclick="UI.setLanPreset('world_tour')"
+                      id="lan-preset-world_tour"
+                      class="p-2.5 rounded-xl border border-white/10 bg-slate-900 text-left hover:border-amber-400/50 cursor-pointer transition"
+                    >
+                      <div class="font-racing font-bold text-xs text-white">MONDIALE F1</div>
+                      <div class="text-[10px] text-slate-400 mt-0.5">5 Tappe • 4 Continenti</div>
+                    </button>
+                    <button
+                      onclick="UI.setLanPreset('custom')"
+                      id="lan-preset-custom"
+                      class="p-2.5 rounded-xl border border-white/10 bg-slate-900 text-left hover:border-amber-400/50 cursor-pointer transition"
+                    >
+                      <div class="font-racing font-bold text-xs text-white">PERSONALIZZATO</div>
+                      <div class="text-[10px] text-slate-400 mt-0.5">Scegli Tappe Libere</div>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Giri per Gara & Regola Griglia -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label class="block text-slate-300 font-semibold mb-1">Giri per Ciascuna Tappa</label>
+                    <div class="grid grid-cols-4 gap-1.5">
+                      <button
+                        onclick="UI.setLanLaps(2)"
+                        id="lan-champ-laps-2"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs cursor-pointer"
+                      >2</button>
+                      <button
+                        onclick="UI.setLanLaps(3)"
+                        id="lan-champ-laps-3"
+                        class="py-1.5 rounded-lg bg-amber-400 text-slate-950 font-racing font-bold text-xs cursor-pointer"
+                      >3</button>
+                      <button
+                        onclick="UI.setLanLaps(5)"
+                        id="lan-champ-laps-5"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs cursor-pointer"
+                      >5</button>
+                      <button
+                        onclick="UI.setLanLaps(10)"
+                        id="lan-champ-laps-10"
+                        class="py-1.5 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs cursor-pointer"
+                      >10</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-slate-300 font-semibold mb-1">Griglia Tappe Successive</label>
+                    <div class="grid grid-cols-2 gap-1.5">
+                      <button
+                        onclick="UI.setLanGridRule('reverse_8')"
+                        id="lan-gridrule-reverse_8"
+                        class="py-1.5 px-2 rounded-lg bg-amber-400 text-slate-950 font-racing font-bold text-[11px] truncate cursor-pointer"
+                      >Top 8 Invertita</button>
+                      <button
+                        onclick="UI.setLanGridRule('results')"
+                        id="lan-gridrule-results"
+                        class="py-1.5 px-2 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-[11px] truncate cursor-pointer"
+                      >Ordine d'Arrivo</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Avversari IA (Bot F1) ON/OFF -->
+                <div class="flex items-center justify-between gap-3 bg-slate-900/80 rounded-xl p-3 border border-white/10">
+                  <div class="min-w-0">
+                    <div class="font-racing font-bold text-xs text-white flex items-center gap-1.5">
+                      <i class="fa-solid fa-robot text-amber-300"></i>
+                      <span>AVVERSARI IA (BOT F1)</span>
+                    </div>
+                    <div id="lan-bots-state-label" class="text-[10px] text-slate-400 mt-0.5">Griglia completata a 10 vetture con piloti IA</div>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onclick="UI.setLanEnableBots(true)"
+                      id="lan-bots-on"
+                      class="py-1.5 px-3 rounded-lg bg-amber-400 text-slate-950 font-racing font-black text-xs cursor-pointer"
+                    >ON</button>
+                    <button
+                      onclick="UI.setLanEnableBots(false)"
+                      id="lan-bots-off"
+                      class="py-1.5 px-3 rounded-lg bg-slate-800 text-slate-300 font-racing font-bold text-xs hover:bg-slate-700 cursor-pointer"
+                    >OFF</button>
+                  </div>
+                </div>
+
+                <!-- Stage Calendar Sequencer Preview -->
+                <div class="bg-slate-900/90 rounded-xl p-3 border border-white/5 space-y-1.5">
+                  <div class="flex items-center justify-between text-[11px] font-racing text-slate-400">
+                    <span>CALENDARIO TAPPE DEL TORNEO</span>
+                    <span id="lan-champ-stages-count" class="text-amber-300 font-bold">4 TAPPE</span>
+                  </div>
+                  <div id="lan-champ-stage-pills" class="flex flex-wrap items-center gap-1.5 pt-1">
+                    <!-- Dinamico: pillole piste con frecce -->
+                  </div>
+                </div>
+
+                <!-- Custom Track Picker (Se attivo preset Custom) -->
+                <div id="lan-custom-track-selector-box" class="hidden bg-slate-900/70 rounded-xl p-3 border border-amber-400/20 space-y-2">
+                  <div class="flex items-center justify-between text-xs font-racing">
+                    <span class="text-white font-bold">Seleziona le piste del campionato (3-8):</span>
+                    <span id="lan-custom-selected-count" class="text-amber-300 font-bold">4 selezionate</span>
+                  </div>
+                  <div id="lan-custom-track-chips" class="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-36 overflow-y-auto pr-1">
+                    <!-- Dinamico -->
+                  </div>
+                </div>
+
+                <button
+                  onclick="UI.startLanRace()"
+                  id="btn-lan-start-champ"
+                  class="w-full py-3.5 px-4 rounded-xl font-racing font-black text-sm uppercase tracking-wider bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 text-slate-950 shadow-xl shadow-amber-500/20 hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <i class="fa-solid fa-trophy text-base" aria-hidden="true"></i>
+                  <span>AVVIA TAPPA 1: MONZA GP (CAMPIONATO F1)</span>
+                </button>
+              </div>
+
+              <!-- CONTROLLI GUEST (Ospite che attende l'Host) -->
+              <div id="lan-guest-controls" class="hidden glass-panel rounded-2xl p-4 border border-cyan-400/30 bg-slate-950/70 space-y-3">
+                <div class="flex items-center justify-between pb-2 border-b border-white/10">
+                  <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 text-sm">
+                      <i class="fa-solid fa-flag-checkered"></i>
+                    </div>
+                    <div>
+                      <div class="font-racing text-xs uppercase tracking-widest text-cyan-300 font-bold">PADDOCK LAN OSPITE</div>
+                      <div class="text-[11px] text-slate-400 mt-0.5">
+                        Host della sessione: <span id="lan-guest-host-name" class="font-racing font-bold text-amber-400">--</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1.5 text-xs text-amber-300 font-racing">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+                    <span class="text-[11px] font-bold">IN ATTESA DELL'HOST</span>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs bg-slate-900/90 rounded-xl p-3 border border-white/5 font-racing">
+                  <div>
+                    <span class="text-[9px] text-slate-400 uppercase block">Modalità di Gara</span>
+                    <div id="lan-guest-mode-name" class="font-bold text-white mt-0.5">GARA SINGOLA</div>
+                  </div>
+                  <div>
+                    <span class="text-[9px] text-slate-400 uppercase block">Circuito / Torneo</span>
+                    <div id="lan-guest-track-name" class="font-bold text-cyan-300 mt-0.5">MONZA GP</div>
+                  </div>
+                  <div class="col-span-2 sm:col-span-1">
+                    <span class="text-[9px] text-slate-400 uppercase block">Formato / Giri</span>
+                    <div id="lan-guest-laps-count" class="font-bold text-amber-300 mt-0.5">3 GIRI</div>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-900/50 border border-white/5 text-[11px] text-slate-300">
+                  <i class="fa-solid fa-hourglass-start text-cyan-400 animate-spin"></i>
+                  <span>L'Host avvierà il semaforo sincronizzato a 30Hz appena tutti i piloti sono pronti.</span>
+                </div>
+              </div>
+
+              <!-- Box Griglia di Partenza & Pit Boxes -->
+              <div class="glass-panel rounded-2xl p-4 sm:p-5 border border-white/10 flex-1 flex flex-col justify-between">
                 <div>
                   <div class="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
                     <div class="flex items-center gap-2">
                       <span class="font-racing text-xs uppercase tracking-widest text-amber-400 font-bold">
-                        PILOTI NELLA STANZA
+                        SCHIERAMENTO GRIGLIA & PIT BOXES
                       </span>
                       <span
                         id="lan-players-count"
@@ -1008,37 +1397,13 @@
                         >0</span
                       >
                     </div>
-                    <span class="text-[11px] text-slate-400">
-                      Griglia Sincronizzata in Tempo Reale
+                    <span class="text-[11px] text-slate-400 font-racing">
+                      Griglia F1 Sincronizzata in Tempo Reale
                     </span>
                   </div>
 
-                  <!-- Room & Host Header Info Bar -->
-                  <div id="lan-room-info-bar" class="hidden mb-3.5 bg-slate-900/90 border border-amber-400/30 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-                    <div class="flex items-center gap-2.5">
-                      <div class="w-8 h-8 rounded-lg bg-amber-400/20 border border-amber-400/50 flex items-center justify-center text-amber-400">
-                        <i class="fa-solid fa-crown"></i>
-                      </div>
-                      <div>
-                        <div class="text-[10px] uppercase font-racing text-slate-400 leading-none">Direttore di Gara (Host)</div>
-                        <div id="lan-room-host-display" class="font-racing font-black text-amber-300 text-sm mt-0.5">In attesa...</div>
-                      </div>
-                    </div>
-                    <div class="flex items-center gap-4 text-xs font-racing">
-                      <div class="text-right">
-                        <span class="text-[9px] uppercase text-slate-400 block">Circuito Stanza</span>
-                        <span id="lan-room-track-display" class="font-bold text-cyan-300">MONZA GP</span>
-                      </div>
-                      <div class="h-6 w-px bg-white/10"></div>
-                      <div class="text-right">
-                        <span class="text-[9px] uppercase text-slate-400 block">Giri</span>
-                        <span id="lan-room-laps-display" class="font-bold text-white">3 Giri</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Lista Giocatori Grid -->
-                  <div id="lan-players-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-3 min-h-[140px]">
+                  <!-- Lista Pit Boxes Grid -->
+                  <div id="lan-players-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-h-[140px]">
                     <div class="col-span-full flex flex-col items-center justify-center py-8 text-center text-slate-500">
                       <i class="fa-solid fa-network-wired text-3xl mb-2 opacity-40"></i>
                       <p class="text-xs">Non sei ancora connesso alla rete LAN.</p>
@@ -1046,124 +1411,57 @@
                     </div>
                   </div>
                 </div>
-
-                <!-- Host Controls Panel (Visibile solo all'Host della stanza) -->
-                <div id="lan-host-controls" class="hidden mt-5 pt-4 border-t border-white/10 bg-slate-950/60 rounded-xl p-4 border border-amber-400/30">
-                  <div class="flex items-center justify-between mb-3">
-                    <span class="font-racing text-xs uppercase tracking-widest text-amber-400 font-bold flex items-center gap-1.5">
-                      <i class="fa-solid fa-crown text-amber-400"></i>
-                      <span>PANNELLO DIRETTORE DI GARA (HOST)</span>
-                    </span>
-                    <span class="text-[10px] text-cyan-300 font-racing uppercase font-bold">Sei tu l'Host della sessione</span>
-                  </div>
-
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 text-xs">
-                    <div>
-                      <label class="block text-slate-300 font-semibold mb-1">Circuito di Gara</label>
-                      <select
-                        id="lan-track-select"
-                        onchange="UI.setLanTrack(this.value)"
-                        class="w-full bg-slate-900 border border-white/20 rounded-lg px-2.5 py-1.5 text-white font-racing focus:outline-none"
-                      >
-                        <option value="austin" selected>COTA - AUSTIN GP (USA)</option>
-                        <option value="brands_hatch">BRANDS HATCH GP (UK)</option>
-                        <option value="budapest">HUNGARORING GP (Ungheria)</option>
-                        <option value="catalunya">BARCELONA-CATALUNYA (Spagna)</option>
-                        <option value="hockenheim">HOCKENHEIMRING (Germania)</option>
-                        <option value="ims">INDIANAPOLIS GP (USA)</option>
-                        <option value="melbourne">ALBERT PARK GP (Australia)</option>
-                        <option value="mexico_city">HERMANOS RODRÍGUEZ (Messico)</option>
-                        <option value="montreal">MONTREAL GP (Canada)</option>
-                        <option value="moscow_raceway">MOSCOW RACEWAY (Russia)</option>
-                        <option value="norisring">NORISRING SPEEDWAY (Germania)</option>
-                        <option value="nuerburgring">NÜRBURGRING GP (Germania)</option>
-                        <option value="oschersleben">OSCHERSLEBEN ARENA (Germania)</option>
-                        <option value="sakhir">BAHRAIN - SAKHIR GP (Bahrain)</option>
-                        <option value="sao_paulo">INTERLAGOS - SÃO PAULO (Brasile)</option>
-                        <option value="sepang">SEPANG GP (Malesia)</option>
-                        <option value="shanghai">SHANGHAI GP (Cina)</option>
-                        <option value="silverstone">SILVERSTONE GP (UK)</option>
-                        <option value="sochi">SOCHI AUTODROM (Russia)</option>
-                        <option value="spa">SPA-FRANCORCHAMPS (Belgio)</option>
-                        <option value="spielberg">RED BULL RING (Austria)</option>
-                        <option value="suzuka">SUZUKA GP (Giappone)</option>
-                        <option value="yas_marina">YAS MARINA - ABU DHABI (EAU)</option>
-                        <option value="zandvoort">ZANDVOORT GP (Olanda)</option>
-                        <option value="monza">MONZA GP (Italia)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label class="block text-slate-300 font-semibold mb-1">Giri di Gara</label>
-                      <div class="flex items-center gap-2 mt-1">
-                        <button
-                          onclick="UI.setLanLaps(2)"
-                          id="lan-laps-btn-2"
-                          class="flex-1 py-1 rounded bg-slate-800 text-slate-300 font-racing font-bold text-xs"
-                        >2 GIRI</button>
-                        <button
-                          onclick="UI.setLanLaps(3)"
-                          id="lan-laps-btn-3"
-                          class="flex-1 py-1 rounded bg-amber-400 text-slate-950 font-racing font-bold text-xs"
-                        >3 GIRI</button>
-                        <button
-                          onclick="UI.setLanLaps(5)"
-                          id="lan-laps-btn-5"
-                          class="flex-1 py-1 rounded bg-slate-800 text-slate-300 font-racing font-bold text-xs"
-                        >5 GIRI</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onclick="UI.startLanRace()"
-                    class="w-full py-3 px-4 rounded-xl font-racing font-black text-sm uppercase tracking-wider bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 text-slate-950 shadow-xl shadow-amber-500/20 hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <i class="fa-solid fa-flag-checkered text-base"></i>
-                    <span>AVVIA GARA LAN (SEMAFORO SINCRONIZZATO)</span>
-                  </button>
-                </div>
-
-                <!-- Guest Status Panel (Visibile ai piloti Ospiti che attendono l'Host) -->
-                <div id="lan-guest-controls" class="hidden mt-5 pt-4 border-t border-white/10 bg-slate-950/60 rounded-xl p-4 border border-cyan-400/30">
-                  <div class="flex items-center justify-between mb-3">
-                    <div class="flex items-center gap-2.5">
-                      <div class="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 text-sm">
-                        <i class="fa-solid fa-flag-checkered"></i>
-                      </div>
-                      <div>
-                        <div class="font-racing text-xs uppercase tracking-widest text-cyan-300 font-bold flex items-center gap-1.5">
-                          <span>STANZA LAN GP</span>
-                          <span class="px-1.5 py-0.2 rounded text-[9px] font-racing font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">CONNESSO</span>
-                        </div>
-                        <p class="text-[11px] text-slate-400 mt-0.5">
-                          Host della sessione: <span id="lan-guest-host-name" class="font-racing font-bold text-amber-400">--</span>
-                        </p>
-                      </div>
-                    </div>
-                    <div class="flex items-center gap-1.5 text-xs text-amber-300 font-racing">
-                      <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
-                      <span class="text-[11px] font-bold">IN ATTESA DELL'HOST</span>
-                    </div>
-                  </div>
-
-                  <div class="grid grid-cols-2 gap-3 text-xs bg-slate-900/90 rounded-xl p-3 border border-white/5">
-                    <div>
-                      <span class="text-[10px] text-slate-400 uppercase font-racing">Circuito Scelto dall'Host</span>
-                      <div id="lan-guest-track-name" class="font-racing font-bold text-white mt-0.5">MONZA GP</div>
-                    </div>
-                    <div>
-                      <span class="text-[10px] text-slate-400 uppercase font-racing">Giri di Gara</span>
-                      <div id="lan-guest-laps-count" class="font-racing font-bold text-amber-300 mt-0.5">3 GIRI</div>
-                    </div>
-                  </div>
-
-                  <div class="mt-3 flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-900/50 border border-white/5 text-[11px] text-slate-300">
-                    <i class="fa-solid fa-hourglass-start text-cyan-400 animate-spin"></i>
-                    <span>Tutti i piloti partiranno simultaneamente appena l'Host preme Avvia Gara.</span>
-                  </div>
-                </div>
               </div>
             </div>
+          </div>
+        </section>
+
+        <!-- 4. TAB: CAMPIONATO A TAPPE F1 (GRAND PRIX SEASON) -->
+        <section
+          id="screen-championship"
+          class="hidden w-full max-w-7xl mx-auto my-auto flex-col gap-4 pointer-auto max-h-[calc(100vh-140px)] overflow-y-auto pr-1"
+        >
+          <!-- Header Banner -->
+          <div
+            class="glass-panel rounded-2xl p-3.5 sm:p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 sm:gap-4 border-l-4 border-l-amber-400 pointer-auto"
+          >
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  class="px-2.5 py-0.5 rounded text-xs font-racing font-bold uppercase bg-amber-400 text-slate-950 flex items-center gap-1.5"
+                >
+                  <i class="fa-solid fa-trophy text-xs"></i>
+                  <span>CAMPIONATO A TAPPE</span>
+                </span>
+                <span class="text-xs text-slate-300 font-medium hidden md:inline">
+                  Grand Prix Season • Punti FIA (25, 18, 15...) • Griglia Invertita Top 8 • Gran Finale
+                </span>
+              </div>
+              <h2
+                class="font-racing text-lg sm:text-2xl font-black text-white mt-1 tracking-wide"
+              >
+                FIA FORMULA 1 WORLD CHAMPIONSHIP
+              </h2>
+              <p class="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed hidden lg:block">
+                Affronta 4 o 5 gare consecutive con classifica a punti reali FIA. La griglia di partenza si adatta dopo ogni tappa invertendo i primi 8 classificati. Conquista il titolo di Campione del Mondo e il super montepremi finale!
+              </p>
+            </div>
+
+            <!-- Profile Summary Badge -->
+            <div class="hidden sm:flex items-center gap-3 bg-slate-900/90 border border-white/10 rounded-xl p-3 shrink-0">
+              <div class="w-10 h-10 rounded-lg bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-amber-400 text-lg">
+                <i class="fa-solid fa-medal"></i>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase font-racing text-slate-400">Pilota Ufficiale</div>
+                <div id="champ-profile-name" class="font-racing font-bold text-sm text-white">TU</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dynamic Championship Hub Content (Rendered by UI.renderChampionshipHub) -->
+          <div id="champ-hub-content" class="w-full pointer-auto">
+            <!-- Populated via UI.renderChampionshipHub() -->
           </div>
         </section>
       </main>
@@ -1285,7 +1583,7 @@
                   >LIVE TIMING F1</span
                 >
                 <div class="flex items-center gap-1.5">
-                  <span id="hud-diff-tag" class="px-1.5 py-0.2 rounded text-[8px] font-racing font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">MEDIO (x1.5)</span>
+                  <span id="hud-diff-tag" class="px-1.5 py-0.5 rounded text-[8px] font-racing font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30">MEDIO (x1.5)</span>
                   <span id="hud-ai-status" class="text-cyan-400"
                     >GARA ATTIVA</span
                   >
@@ -1303,7 +1601,7 @@
           <!-- Right: Live Telemetry & Quick Action Buttons -->
           <div class="flex items-start gap-2.5 pointer-auto">
             <div
-              class="hidden xl:flex glass-panel rounded-xl px-3.5 py-2 items-center gap-3.5 text-xs"
+              class="flex glass-panel rounded-xl px-3 py-1.5 items-center gap-2.5 text-xs"
             >
               <div>
                 <div class="text-[9px] uppercase text-slate-400">FPS / Sim</div>
@@ -1342,23 +1640,26 @@
 
             <button
               onclick="RaceEngine.cycleCamera()"
+              aria-label="Cambia visuale camera"
               class="glass-panel hover:bg-slate-800/90 px-3 py-2.5 rounded-xl text-xs font-racing font-bold text-cyan-300 flex items-center gap-1.5 transition"
             >
-              <i class="fa-solid fa-video"></i>
+              <i class="fa-solid fa-video" aria-hidden="true"></i>
               <span class="hidden sm:inline">VISUALE [C]</span>
             </button>
             <button
               onclick="RaceEngine.resetPlayerToTrack()"
+              aria-label="Resetta posizione in pista"
               class="glass-panel hover:bg-slate-800/90 px-3 py-2.5 rounded-xl text-xs font-racing font-bold text-amber-300 flex items-center gap-1.5 transition"
             >
-              <i class="fa-solid fa-rotate"></i>
+              <i class="fa-solid fa-rotate" aria-hidden="true"></i>
               <span class="hidden sm:inline">RESET [R]</span>
             </button>
             <button
               onclick="RaceEngine.togglePause()"
+              aria-label="Metti in pausa"
               class="glass-panel hover:bg-slate-800/90 px-3 py-2.5 rounded-xl text-xs font-racing font-bold text-white flex items-center gap-1.5 transition"
             >
-              <i class="fa-solid fa-pause"></i>
+              <i class="fa-solid fa-pause" aria-hidden="true"></i>
               <span class="hidden sm:inline">PAUSA [ESC]</span>
             </button>
           </div>
@@ -1402,6 +1703,22 @@
             <i class="fa-solid fa-fire-flame-curved mr-1"></i> DRIFTING / SLIP
             ANGLE
           </div>
+
+          <div
+            id="hud-draft-banner"
+            class="hidden mt-2 px-4 py-1 rounded-full bg-cyan-500/20 border border-cyan-400/60 text-cyan-300 font-racing font-bold text-xs tracking-widest uppercase shadow-lg shadow-cyan-500/30 flex items-center justify-center gap-1.5 transition-all"
+          >
+            <i class="fa-solid fa-wind text-cyan-400 animate-pulse"></i>
+            <span id="hud-draft-text">SCIA ATTIVA (+15 KM/H)</span>
+          </div>
+
+          <div
+            id="hud-finish-banner"
+            class="hidden mt-3 px-6 py-2.5 rounded-2xl bg-slate-950/90 border-2 border-amber-400 text-white font-racing font-black text-sm sm:text-base tracking-widest uppercase shadow-2xl shadow-amber-500/30 flex items-center justify-center gap-2 animate-pulse"
+          >
+            <i class="fa-solid fa-flag-checkered text-amber-400 text-lg"></i>
+            <span id="hud-finish-banner-text">BANDIERA A SCACCHI</span>
+          </div>
         </div>
 
         <!-- Bottom Row: 2D Multi-Target Radar Minimap (Left) + Mobile Touch Controls (Center) + GT Tachometer (Right) -->
@@ -1435,31 +1752,33 @@
           >
             <button
               id="touch-left"
-              class="w-13 h-13 p-3 rounded-2xl glass-panel active:bg-cyan-500/40 flex items-center justify-center text-xl text-white"
+              aria-label="Sterzo a sinistra"
+              class="w-[3.25rem] h-[3.25rem] p-3 rounded-2xl glass-panel active:bg-cyan-500/40 flex items-center justify-center text-xl text-white"
             >
-              <i class="fa-solid fa-chevron-left"></i>
+              <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
             </button>
             <button
               id="touch-right"
-              class="w-13 h-13 p-3 rounded-2xl glass-panel active:bg-cyan-500/40 flex items-center justify-center text-xl text-white"
+              aria-label="Sterzo a destra"
+              class="w-[3.25rem] h-[3.25rem] p-3 rounded-2xl glass-panel active:bg-cyan-500/40 flex items-center justify-center text-xl text-white"
             >
-              <i class="fa-solid fa-chevron-right"></i>
+              <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
             </button>
             <button
               id="touch-drift"
-              class="w-13 h-13 p-3 rounded-2xl glass-panel active:bg-amber-500/40 flex items-center justify-center text-xs font-racing font-bold text-amber-300"
+              class="w-[3.25rem] h-[3.25rem] p-3 rounded-2xl glass-panel active:bg-amber-500/40 flex items-center justify-center text-xs font-racing font-bold text-amber-300"
             >
               DRIFT
             </button>
             <button
               id="touch-brake"
-              class="w-13 h-13 p-3 rounded-2xl glass-panel active:bg-rose-500/40 flex items-center justify-center text-xs font-racing font-bold text-rose-400"
+              class="w-[3.25rem] h-[3.25rem] p-3 rounded-2xl glass-panel active:bg-rose-500/40 flex items-center justify-center text-xs font-racing font-bold text-rose-400"
             >
               FRENO
             </button>
             <button
               id="touch-gas"
-              class="w-15 h-15 p-4 rounded-2xl bg-emerald-500/30 border border-emerald-400/50 active:bg-emerald-500/60 flex items-center justify-center text-xs font-racing font-bold text-emerald-300"
+              class="w-[3.75rem] h-[3.75rem] p-4 rounded-2xl bg-emerald-500/30 border border-emerald-400/50 active:bg-emerald-500/60 flex items-center justify-center text-xs font-racing font-bold text-emerald-300"
             >
               GAS
             </button>
@@ -1553,6 +1872,8 @@
       <!-- ========================================== -->
       <div
         id="modal-pause"
+        role="dialog"
+        aria-modal="true"
         class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-md z-30 items-center justify-center p-4 pointer-auto"
       >
         <div
@@ -1576,20 +1897,20 @@
               onclick="RaceEngine.togglePause()"
               class="gt-btn w-full py-3 rounded-xl font-racing font-bold text-sm bg-cyan-400 text-slate-950"
             >
-              <i class="fa-solid fa-play mr-2"></i>RIPRENDI GUIDA
+              <i class="fa-solid fa-play mr-2" aria-hidden="true"></i>RIPRENDI GUIDA
             </button>
             <button
               onclick="RaceEngine.restartSession()"
               class="gt-btn w-full py-3 rounded-xl font-racing font-bold text-sm bg-slate-800 hover:bg-slate-700 text-white border border-white/10"
             >
-              <i class="fa-solid fa-rotate-right mr-2"></i>RICOMINCIA GRAN
+              <i class="fa-solid fa-rotate-right mr-2" aria-hidden="true"></i>RICOMINCIA GRAN
               PREMIO
             </button>
             <button
               onclick="RaceEngine.quitToMenu()"
               class="gt-btn w-full py-3 rounded-xl font-racing font-bold text-sm bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-500/30"
             >
-              <i class="fa-solid fa-door-open mr-2"></i>ABBANDONA E TORNA AL
+              <i class="fa-solid fa-door-open mr-2" aria-hidden="true"></i>ABBANDONA E TORNA AL
               MENU
             </button>
           </div>
@@ -1601,6 +1922,8 @@
       <!-- ========================================== -->
       <div
         id="modal-results"
+        role="dialog"
+        aria-modal="true"
         class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-lg z-30 items-center justify-center p-3 sm:p-4 pointer-auto"
       >
         <div
@@ -1712,14 +2035,250 @@
               id="btn-results-rematch"
               class="gt-btn flex-1 py-3 rounded-xl font-racing font-bold text-xs sm:text-sm bg-slate-800 hover:bg-slate-700 text-white border border-white/10 flex items-center justify-center gap-2 cursor-pointer"
             >
-              <i class="fa-solid fa-rotate-right"></i><span>RIVINCITA GP</span>
+              <i class="fa-solid fa-rotate-right" aria-hidden="true"></i><span>RIVINCITA GP</span>
             </button>
             <button
               onclick="RaceEngine.quitToMenu()"
               id="btn-results-menu"
               class="gt-btn gt-btn-gold flex-1 py-3 rounded-xl font-racing font-bold text-xs sm:text-sm bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 text-slate-950 flex items-center justify-center gap-2 cursor-pointer shadow-lg"
             >
-              <i class="fa-solid fa-check"></i><span>TORNA AL PADDOCK</span>
+              <i class="fa-solid fa-check" aria-hidden="true"></i><span>TORNA AL PADDOCK</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- CHAMPIONSHIP STAGE RESULTS MODAL           -->
+      <!-- ========================================== -->
+      <div
+        id="modal-championship-stage"
+        role="dialog"
+        aria-modal="true"
+        class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-md z-40 items-center justify-center p-3 sm:p-5 pointer-auto overflow-y-auto"
+      >
+        <div
+          class="glass-panel rounded-3xl p-4 sm:p-7 max-w-3xl w-full border border-amber-400/40 shadow-2xl space-y-4 sm:space-y-5 my-auto max-h-[92vh] overflow-y-auto pointer-auto"
+        >
+          <!-- Modal Header -->
+          <div class="flex items-center justify-between border-b border-white/10 pb-4">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-amber-400 text-lg font-black">
+                <i class="fa-solid fa-flag-checkered"></i>
+              </div>
+              <div>
+                <span id="champ-stage-badge" class="px-2 py-0.5 rounded text-[10px] font-racing font-bold uppercase bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                  TAPPA 1 DI 4
+                </span>
+                <h3 id="champ-stage-title" class="font-racing text-xl sm:text-2xl font-black text-white mt-0.5">
+                  MONZA GP - RISULTATI DI TAPPA
+                </h3>
+              </div>
+            </div>
+            <div class="text-right">
+              <span class="text-[10px] uppercase font-racing text-slate-400">Punti FIA Assegnati</span>
+              <div class="font-racing font-bold text-amber-300 text-xs sm:text-sm">Top 10 + 1 Pt Giro Veloce</div>
+            </div>
+          </div>
+
+          <!-- Stage Podium Row (1°, 2°, 3°) -->
+          <div id="champ-stage-podium-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <!-- Populated dynamically -->
+          </div>
+
+          <!-- Two Column Details: Stage Finish Order & Overall Standings Preview -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Left: Stage Finish & Points -->
+            <div class="bg-slate-900/80 rounded-2xl p-4 border border-white/10 flex flex-col justify-between">
+              <div class="flex items-center justify-between mb-2">
+                <span class="font-racing text-xs uppercase font-bold text-white flex items-center gap-1.5">
+                  <i class="fa-solid fa-list-ol text-amber-400"></i> Ordine d'Arrivo Tappa
+                </span>
+                <span class="text-[10px] text-slate-400 font-racing">Punti Gara</span>
+              </div>
+              <div id="champ-stage-order-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+
+            <!-- Right: Overall Championship Standings -->
+            <div class="bg-slate-900/80 rounded-2xl p-4 border border-white/10 flex flex-col justify-between">
+              <div class="flex items-center justify-between mb-2">
+                <span class="font-racing text-xs uppercase font-bold text-white flex items-center gap-1.5">
+                  <i class="fa-solid fa-trophy text-amber-400"></i> Classifica Generale Piloti
+                </span>
+                <span class="text-[10px] text-slate-400 font-racing">Totale Punti</span>
+              </div>
+              <div id="champ-overall-order-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Next Stage Preview & Grid Rule Banner -->
+          <div id="champ-next-stage-banner" class="rounded-2xl p-4 bg-gradient-to-r from-amber-950/40 via-slate-900/90 to-cyan-950/40 border border-amber-400/30 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-amber-400/20 text-amber-400 flex items-center justify-center text-sm font-bold">
+                <i class="fa-solid fa-shuffle"></i>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase font-racing text-slate-400">Prossimo Circuito & Griglia</div>
+                <div id="champ-next-stage-name" class="font-racing font-bold text-white text-sm">
+                  TAPPA 2: RED BULL RING (SPIELBERG)
+                </div>
+                <div id="champ-next-grid-rule-info" class="text-xs text-amber-300 font-medium mt-0.5">
+                  Griglia Invertita per i primi 8 classificati
+                </div>
+              </div>
+            </div>
+            <div class="text-right text-xs text-slate-400">
+              <span id="champ-next-laps-badge" class="px-2.5 py-1 rounded bg-white/10 font-racing font-bold text-white">3 GIRI</span>
+            </div>
+          </div>
+
+          <!-- Host-Only Action Control Row -->
+          <div class="pt-2 flex flex-col sm:flex-row items-center gap-3">
+            <button
+              onclick="RaceEngine.quitToMenu()"
+              class="w-full sm:w-auto px-5 py-3 rounded-xl font-racing font-bold text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+              <span>MENU CAMPIONATO</span>
+            </button>
+
+            <!-- Host Trigger Button (or Guest Waiting Badge) -->
+            <div id="champ-stage-cta-container" class="w-full sm:flex-1">
+              <!-- Rendered dynamically: Host gets 'AVVIA TAPPA SUCCESSIVA: [Circuito]', Guest gets waiting state -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- CHAMPIONSHIP GRAND FINALE MODAL            -->
+      <!-- ========================================== -->
+      <div
+        id="modal-championship-finale"
+        role="dialog"
+        aria-modal="true"
+        class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-lg z-50 items-center justify-center p-3 sm:p-6 pointer-auto overflow-y-auto"
+      >
+        <div
+          class="glass-panel rounded-3xl p-4 sm:p-8 max-w-4xl w-full border-2 border-amber-400/60 shadow-2xl relative my-auto space-y-4 sm:space-y-6 max-h-[92vh] overflow-y-auto pointer-auto"
+        >
+          <!-- Celebratory Confetti Canvas -->
+          <canvas id="champ-confetti-canvas" class="absolute inset-0 pointer-events-none z-20 w-full h-full rounded-3xl"></canvas>
+
+          <!-- Top Bar: Title & Modular View Toggle -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-4">
+            <div>
+              <span class="px-2.5 py-0.5 rounded text-[10px] font-racing font-bold uppercase bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 shadow-md">
+                FIA FORMULA 1 WORLD CHAMPIONSHIP
+              </span>
+              <h2 class="font-racing text-2xl sm:text-3xl font-black text-white mt-1 tracking-wide">
+                GRAN FINALE DELLA STAGIONE
+              </h2>
+            </div>
+
+            <!-- MODULAR SWITCH: Cerimonia Spettacolare vs Classifica Semplice -->
+            <div class="flex items-center gap-2 bg-slate-900/90 p-1.5 rounded-xl border border-white/10">
+              <button
+                onclick="UI.setChampionshipFinaleView('ceremony')"
+                id="btn-finale-view-ceremony"
+                class="px-3 py-1.5 rounded-lg font-racing text-xs font-bold transition flex items-center gap-1.5 bg-amber-400 text-slate-950 cursor-pointer"
+              >
+                <i class="fa-solid fa-trophy" aria-hidden="true"></i>
+                <span>Cerimonia 🏆</span>
+              </button>
+              <button
+                onclick="UI.setChampionshipFinaleView('table')"
+                id="btn-finale-view-table"
+                class="px-3 py-1.5 rounded-lg font-racing text-xs font-bold transition flex items-center gap-1.5 bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+              >
+                <i class="fa-solid fa-table-list" aria-hidden="true"></i>
+                <span>Classifica Classica 📋</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- VIEW 1: SPECTACULAR CEREMONY VIEW -->
+          <div id="champ-finale-ceremony-view" class="space-y-6">
+            <!-- Trophy & Crowning Centerpiece -->
+            <div class="text-center py-6 px-4 bg-gradient-to-b from-amber-500/10 via-slate-900/60 to-transparent rounded-3xl border border-amber-400/30 relative overflow-hidden">
+              <div id="champ-finale-trophy-glow" class="w-24 h-24 sm:w-28 sm:h-28 mx-auto rounded-full bg-amber-400/20 border-2 border-amber-400/50 flex items-center justify-center text-amber-300 text-5xl sm:text-6xl shadow-[0_0_50px_rgba(251,191,36,0.35)] animate-bounce">
+                <i id="champ-finale-trophy-icon" class="fa-solid fa-trophy"></i>
+              </div>
+
+              <div id="champ-finale-title" class="font-racing text-2xl sm:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-yellow-400 to-amber-500 mt-4 tracking-wider">
+                CAMPIONE DEL MONDO F1
+              </div>
+
+              <p id="champ-finale-player-sub" class="font-racing text-sm sm:text-base text-slate-300 mt-1 font-semibold">
+                Congratulazioni per aver dominato la stagione a tappe!
+              </p>
+
+              <!-- Super Prize Badge -->
+              <div class="mt-4 inline-flex items-center gap-2.5 px-6 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500/20 via-emerald-500/30 to-emerald-500/20 border border-emerald-400/50 text-emerald-300 font-racing font-black text-lg sm:text-xl shadow-lg">
+                <i class="fa-solid fa-coins text-emerald-400"></i>
+                <span id="champ-finale-prize-text">+ Cr. 225.000</span>
+                <span class="text-xs font-normal text-emerald-200 uppercase tracking-widest ml-1">ACCREDITATI!</span>
+              </div>
+            </div>
+
+            <!-- Player Season Performance Cards -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              <div class="bg-slate-900/90 rounded-2xl p-3 border border-white/10">
+                <div class="text-[10px] uppercase font-racing text-slate-400">Posizione Finale</div>
+                <div id="champ-stat-rank" class="font-racing text-xl sm:text-2xl font-black text-amber-400 mt-0.5">1°</div>
+              </div>
+              <div class="bg-slate-900/90 rounded-2xl p-3 border border-white/10">
+                <div class="text-[10px] uppercase font-racing text-slate-400">Punti FIA Totali</div>
+                <div id="champ-stat-points" class="font-racing text-xl sm:text-2xl font-black text-white mt-0.5">100</div>
+              </div>
+              <div class="bg-slate-900/90 rounded-2xl p-3 border border-white/10">
+                <div class="text-[10px] uppercase font-racing text-slate-400">Vittorie Tappe</div>
+                <div id="champ-stat-wins" class="font-racing text-xl sm:text-2xl font-black text-emerald-400 mt-0.5">3</div>
+              </div>
+              <div class="bg-slate-900/90 rounded-2xl p-3 border border-white/10">
+                <div class="text-[10px] uppercase font-racing text-slate-400">Podi Conquistati</div>
+                <div id="champ-stat-podiums" class="font-racing text-xl sm:text-2xl font-black text-cyan-400 mt-0.5">4</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VIEW 2: CLASSIC TABULAR STANDINGS VIEW -->
+          <div id="champ-finale-table-view" class="hidden space-y-3">
+            <div class="flex items-center justify-between text-xs text-slate-400 font-racing px-2">
+              <span>CLASSIFICA FINALE PILOTI MONDIALE F1</span>
+              <span>PUNTEGGI UFFICIALI FIA</span>
+            </div>
+            <div class="bg-slate-900/90 rounded-2xl p-3 border border-white/10 max-h-72 overflow-y-auto">
+              <table class="w-full text-left font-racing text-xs">
+                <thead>
+                  <tr class="border-b border-white/10 text-slate-400 text-[10px] uppercase">
+                    <th class="py-2 px-2">Pos</th>
+                    <th class="py-2 px-2">Pilota</th>
+                    <th class="py-2 px-2 text-center">Vittorie</th>
+                    <th class="py-2 px-2 text-center">Podi</th>
+                    <th class="py-2 px-2 text-center">Giri Veloci</th>
+                    <th class="py-2 px-2 text-right">Punti</th>
+                  </tr>
+                </thead>
+                <tbody id="champ-finale-table-body">
+                  <!-- Populated dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Modal Action Button -->
+          <div class="pt-2 flex flex-col sm:flex-row items-center justify-end gap-3">
+            <button
+              onclick="UI.claimChampionshipRewardsAndExit()"
+              class="w-full sm:w-auto px-8 py-3.5 rounded-xl font-racing font-black text-sm uppercase tracking-wider bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-500 text-slate-950 shadow-xl shadow-amber-500/20 hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <i class="fa-solid fa-check-double text-base" aria-hidden="true"></i>
+              <span>RISCUOTI PREMIO E TERMINA CAMPIONATO</span>
             </button>
           </div>
         </div>
@@ -1730,6 +2289,8 @@
       <!-- ========================================== -->
       <div
         id="modal-reset"
+        role="dialog"
+        aria-modal="true"
         class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-md z-40 items-center justify-center p-4 pointer-auto"
       >
         <div
@@ -1770,6 +2331,8 @@
       <!-- ========================================== -->
       <div
         id="modal-youtube-onboard"
+        role="dialog"
+        aria-modal="true"
         class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 items-center justify-center p-4 pointer-auto animate-fade-in"
       >
         <div
@@ -1798,8 +2361,9 @@
               onclick="UI.closeYoutubeOnboardModal()"
               class="w-9 h-9 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition border border-white/10 cursor-pointer"
               title="Chiudi finestra"
+              aria-label="Chiudi finestra"
             >
-              <i class="fa-solid fa-xmark"></i>
+              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </div>
 
@@ -1855,7 +2419,7 @@
                 onclick="AudioEngine.previewCarRev(GameApp.selectedCarId)"
                 class="gt-btn py-2.5 px-3 rounded-xl font-racing font-bold text-xs uppercase tracking-wider bg-slate-800 hover:bg-amber-400 hover:text-slate-950 text-amber-300 border border-amber-400/30 flex items-center justify-center gap-1.5 transition cursor-pointer"
               >
-                <i class="fa-solid fa-gauge-high"></i>
+                <i class="fa-solid fa-gauge-high" aria-hidden="true"></i>
                 <span>TEST ACCELERATA</span>
               </button>
               <button
@@ -1885,6 +2449,15 @@
           >
         </div>
       </div>
+
+      <!-- Overlay Debug Performance (tasto F8 per mostrare/nascondere) -->
+      <div id="perf-debug" class="hidden fixed bottom-2 right-2 z-40 pointer-events-none glass-panel rounded-lg px-3 py-2 text-[10px] font-mono text-emerald-300 leading-tight">
+        <div>FPS: <span id="perf-fps">--</span></div>
+        <div>CPU: <span id="perf-update">--</span> ms</div>
+        <div>Render: <span id="perf-render">--</span> ms</div>
+        <div>Draw: <span id="perf-draw">--</span></div>
+        <div>Tris: <span id="perf-tri">--</span></div>
+      </div>
     </div>
 
     <!-- Modular Application Scripts -->
@@ -1894,8 +2467,8 @@
     <script src="js/graphicsEngine.js"></script>
     <script src="js/assets.js"></script>
     <script src="js/trackBuilder.js"></script>
-    <script src="js/tileTrackBuilder.js"></script>
     <script src="js/networkEngine.js"></script>
+    <script src="js/championshipEngine.js"></script>
     <script src="js/raceEngine.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/main.js"></script>
